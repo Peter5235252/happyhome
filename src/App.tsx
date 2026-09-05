@@ -74,6 +74,7 @@ export default function App() {
     return localStorage.getItem('voice_assistant_model') || 'gemini-3.6-flash';
   });
   const [micError, setMicError] = useState<string | null>(null);
+  const [isRequestingMic, setIsRequestingMic] = useState<boolean>(false);
 
   const [apiKeys, setApiKeys] = useState<Record<string, string>>(() => {
     try {
@@ -364,52 +365,74 @@ export default function App() {
   }, [dynamicObjects, settings, selectedModel, apiKeys, conversationHistory, userMemory]);
 
   const handleRequestMicPermission = useCallback(async () => {
-    const result = await SpeechToTextEngine.requestMicrophoneAccess();
-    if (result.granted) {
-      setMicError(null);
-      if (sttRef.current) {
-        sttRef.current.start();
-        setVoiceState('listening');
-      } else if (isVoiceActive) {
-        // Engine was never started due to initial denial — create it now so
-        // "Allow Mic" retries actually resume listening instead of doing nothing.
-        const stt = new SpeechToTextEngine({
-          onInterimTranscript: (text) => {
-            if (naturalVoice.getIsSpeaking()) {
-              if (abortControllerRef.current) {
-                abortControllerRef.current.abort();
-                abortControllerRef.current = null;
-              }
-              naturalVoice.stop();
-            }
-            setVoiceState('listening');
-            setTranscript(text);
-          },
-          onFinalTranscript: (text) => {
-            handleUserVoiceMessage(text);
-          },
-          onError: (err) => {
-            const msg = typeof err === 'string' ? err : 'Microphone access was denied.';
-            if (msg.toLowerCase().includes('denied') || msg.toLowerCase().includes('permission') || msg.toLowerCase().includes('not-allowed') || msg.toLowerCase().includes('no microphone')) {
-              setMicError(msg);
-              setVoiceState('idle');
-            }
-          },
-          onStateChange: (sttState) => {
-            if (sttState === 'listening') {
-              setVoiceState((prev) => (prev === 'speaking' || prev === 'thinking' ? prev : 'listening'));
-            }
-          }
-        });
-        stt.start();
-        sttRef.current = stt;
-        setVoiceState('listening');
+    if (isRequestingMic) return;
+    setIsRequestingMic(true);
+    try {
+      // Unsupported browsers: give immediate feedback instead of dead click
+      if (!SpeechToTextEngine.isSupported()) {
+        setMicError('Speech recognition is not supported in this browser. Please use Chrome or Edge, or type below.');
+        setVoiceState('idle');
+        return;
       }
-    } else {
-      setMicError(result.error || 'Microphone access was denied. Please allow microphone permission.');
-      setVoiceState('idle');
+      const result = await SpeechToTextEngine.requestMicrophoneAccess();
+      if (result.granted) {
+        setMicError(null);
+        if (sttRef.current) {
+          try {
+            sttRef.current.start();
+          } catch {
+            // Already started — ignore
+          }
+          setVoiceState('listening');
+        } else if (isVoiceActive) {
+          // Engine was never started due to initial denial — create it now so
+          // "Allow Mic" retries actually resume listening instead of doing nothing.
+          const stt = new SpeechToTextEngine({
+            onInterimTranscript: (text) => {
+              if (naturalVoice.getIsSpeaking()) {
+                if (abortControllerRef.current) {
+                  abortControllerRef.current.abort();
+                  abortControllerRef.current = null;
+                }
+                naturalVoice.stop();
+              }
+              setMicError(null);
+              setVoiceState('listening');
+              setTranscript(text);
+            },
+            onFinalTranscript: (text) => {
+              handleUserVoiceMessage(text);
+            },
+            onError: (err) => {
+              const msg = typeof err === 'string' ? err : 'Microphone access was denied.';
+              if (msg.toLowerCase().includes('denied') || msg.toLowerCase().includes('permission') || msg.toLowerCase().includes('not-allowed') || msg.toLowerCase().includes('no microphone') || msg.toLowerCase().includes('not supported')) {
+                setMicError(msg);
+                setVoiceState('idle');
+              }
+            },
+            onStateChange: (sttState) => {
+              if (sttState === 'listening') {
+                setMicError(null);
+                setVoiceState((prev) => (prev === 'speaking' || prev === 'thinking' ? prev : 'listening'));
+              }
+            }
+          });
+          try {
+            stt.start();
+          } catch {
+            // start() reports via onError when unsupported
+          }
+          sttRef.current = stt;
+          setVoiceState('listening');
+        }
+      } else {
+        setMicError(result.error || 'Microphone access was denied. Please allow microphone permission.');
+        setVoiceState('idle');
+      }
+    } finally {
+      setIsRequestingMic(false);
     }
-  }, [isVoiceActive, handleUserVoiceMessage]);
+  }, [isVoiceActive, handleUserVoiceMessage, isRequestingMic]);
 
   const toggleVoiceMode = useCallback(async () => {
     if (isVoiceActive) {
@@ -802,6 +825,7 @@ export default function App() {
             selectedModel={selectedModel}
             apiKeys={apiKeys}
             micError={micError}
+            isRequestingMic={isRequestingMic}
             onRequestMicPermission={handleRequestMicPermission}
             onSubmitTextCommand={(text) => handleUserVoiceMessage(text)}
             onSelectModel={handleSelectModel}

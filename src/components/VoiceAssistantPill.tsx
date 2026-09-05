@@ -27,6 +27,7 @@ export interface VoiceAssistantPillProps {
   selectedModel: string;
   apiKeys: Record<string, string>;
   micError?: string | null;
+  isRequestingMic?: boolean;
   onRequestMicPermission?: () => void;
   onSubmitTextCommand?: (text: string) => void;
   onSelectModel: (modelId: string) => void;
@@ -45,6 +46,7 @@ export const VoiceAssistantPill: React.FC<VoiceAssistantPillProps> = ({
   selectedModel,
   apiKeys,
   micError,
+  isRequestingMic,
   onRequestMicPermission,
   onSubmitTextCommand,
   onSelectModel,
@@ -88,20 +90,29 @@ export const VoiceAssistantPill: React.FC<VoiceAssistantPillProps> = ({
           animate={{ opacity: 1, y: 0, scale: 1 }}
           exit={{ opacity: 0, y: -20, scale: 0.98 }}
           transition={{ duration: 0.15, ease: 'easeOut' }}
-          className="pointer-events-auto fixed top-4 left-1/2 -translate-x-1/2 z-50 flex flex-col items-center max-w-lg w-[94vw] sm:w-[32rem] transform-gpu"
+          // Glass on the animated layer itself (same pattern as MinimalUI bars/buttons):
+          // backdrop-filter is part of the compositing layer, so blur fades WITH
+          // the slide/fade from frame 1 instead of popping in after it finishes.
+          style={{
+            WebkitBackdropFilter: 'blur(24px) saturate(180%)',
+            backdropFilter: 'blur(24px) saturate(180%)',
+          }}
+          className="pointer-events-auto fixed top-4 left-1/2 -translate-x-1/2 z-50 flex flex-col items-center max-w-lg w-[94vw] sm:w-[32rem] transform-gpu rounded-2xl bg-[rgba(10,10,10,0.55)] backdrop-blur-xl border border-white/10 shadow-2xl"
         >
-          {/* Frosted glass card — filter composites instantly on first frame (see .frosted-instant),
-              opacity fades smoothly together with the slide/fade above */}
+          {/* Content — no separate glass layer so there is only one composited backdrop */}
           <div
-            className="w-full rounded-2xl frosted-glass-panel frosted-instant p-3.5 shadow-2xl text-neutral-100 overflow-hidden transform-gpu"
+            className="w-full p-3.5 text-neutral-100 overflow-hidden transform-gpu"
           >
             {/* Header bar */}
             <div className="flex items-center justify-between gap-3">
               {/* Status indicator & control */}
               <div className="flex items-center gap-2.5">
                 <button
+                  type="button"
+                  disabled={!!isRequestingMic}
                   onClick={() => {
                     sound.playTap();
+                    if (isRequestingMic) return;
                     if (micError && onRequestMicPermission) {
                       onRequestMicPermission();
                     } else if (state === 'speaking' || state === 'thinking') {
@@ -131,7 +142,7 @@ export const VoiceAssistantPill: React.FC<VoiceAssistantPillProps> = ({
                       : 'Resume Listening'
                   }
                 >
-                  {state === 'thinking' ? (
+                  {state === 'thinking' || isRequestingMic ? (
                     <Loader2 className="h-3.5 w-3.5 animate-spin text-sky-400" />
                   ) : state === 'speaking' ? (
                     <Volume2 className="h-3.5 w-3.5 text-emerald-400" />
@@ -253,17 +264,20 @@ export const VoiceAssistantPill: React.FC<VoiceAssistantPillProps> = ({
               >
                 <div className="flex items-center gap-2">
                   <AlertCircle className="w-4 h-4 text-amber-400 shrink-0" />
-                  <span className="text-[11px] leading-tight">Microphone blocked. You can grant access or type below.</span>
+                  <span className="text-[11px] leading-tight">{micError}</span>
                 </div>
                 {onRequestMicPermission && (
                   <button
+                    type="button"
+                    disabled={!!isRequestingMic}
                     onClick={() => {
                       sound.playTap();
                       onRequestMicPermission();
                     }}
-                    className="px-2.5 py-1 rounded-lg bg-amber-500 hover:bg-amber-400 text-black text-[11px] font-medium whitespace-nowrap transition-colors"
+                    className="px-2.5 py-1 rounded-lg bg-amber-500 hover:bg-amber-400 disabled:opacity-60 disabled:cursor-wait text-black text-[11px] font-medium whitespace-nowrap transition-colors flex items-center gap-1.5"
                   >
-                    Allow Mic
+                    {isRequestingMic && <Loader2 className="w-3 h-3 animate-spin" />}
+                    {isRequestingMic ? 'Requesting…' : 'Allow Mic'}
                   </button>
                 )}
               </motion.div>

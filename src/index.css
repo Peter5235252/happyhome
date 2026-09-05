@@ -48,16 +48,15 @@
   transform: translateZ(0);
 }
 
-/* Instant-filter variant for Listening popup + AI assistant modal.
-   backdrop-filter composites on the very first animation frame (GPU-promoted),
-   while opacity still fades smoothly via motion (0 -> 1, same 0.15s easeOut as content)
-   so glass and UI start together with no abrupt pop and no post-animation delay. */
+/* Filter-ready variant for modals.
+   GPU-promotes backdrop-filter so it is live on frame 1 of the motion fade.
+   NOTE: no `contain: paint` here — it isolates the backdrop snapshot and makes
+   blur pop in AFTER the animation on the voice pill. Opacity is left to motion
+   so glass fades WITH the slide/fade like MinimalUI bars/buttons. */
 .frosted-instant {
-  transition-property: backdrop-filter, background-color, border-color !important;
-  transition-duration: 0s !important;
+  transition-property: background-color, border-color !important;
   animation: none !important;
   transform: translateZ(0);
   backface-visibility: hidden;
   -webkit-backface-visibility: hidden;
-  contain: paint;
 }

@@ -34,10 +34,26 @@ export class SpeechToTextEngine {
   /**
    * Proactively triggers browser microphone permission prompt.
    * Call this BEFORE starting SpeechRecognition to avoid `not-allowed` warnings.
+   * Returns guidance for permanently-blocked state so the caller can show
+   * browser UI instructions instead of silently retrying getUserMedia.
    */
-  public static async requestMicrophoneAccess(): Promise<{ granted: boolean; error?: string }> {
+  public static async requestMicrophoneAccess(): Promise<{ granted: boolean; error?: string; permanentlyBlocked?: boolean }> {
     if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
-      return { granted: false, error: 'MediaDevices API not available in this environment.' };
+      return { granted: false, error: 'MediaDevices API not available (needs HTTPS / localhost).' };
+    }
+    // If the browser already reports a hard block, getUserMedia will never prompt —
+    // tell the caller so it can show "click the lock icon" guidance with feedback.
+    try {
+      const prior = await SpeechToTextEngine.getMicrophonePermissionState();
+      if (prior === 'denied') {
+        return {
+          granted: false,
+          permanentlyBlocked: true,
+          error: 'Microphone is blocked for this site. Click the lock/tune icon in the address bar → Site settings → Allow microphone, then click Retry.'
+        };
+      }
+    } catch {
+      // Ignore probe failures, fall through to real request
     }
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -47,11 +63,17 @@ export class SpeechToTextEngine {
     } catch (err: any) {
       // Expected UX outcome (user dismissed/blocked) — don't spam console warning.
       // Caller surfaces this via micError banner with typed-input fallback.
-      const isDenied = err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError' || err.name === 'SecurityError';
+      const name = err?.name || '';
+      const isDenied = name === 'NotAllowedError' || name === 'PermissionDeniedError' || name === 'SecurityError';
+      const isHardBlock = isDenied && (err?.message || '').toLowerCase().includes('denied by system');
+      if (name === 'NotFoundError' || name === 'OverconstrainedError') {
+        return { granted: false, error: 'No microphone was found. Please connect a microphone and click Retry.' };
+      }
       return {
         granted: false,
+        permanentlyBlocked: isHardBlock,
         error: isDenied
-          ? 'Microphone access was denied. Please allow microphone permission in your browser.'
+          ? 'Microphone access was denied. Click Allow when the browser prompts, or use the lock icon in the address bar → Allow microphone, then click Retry.'
           : err.message || 'Could not access microphone.'
       };
     }
