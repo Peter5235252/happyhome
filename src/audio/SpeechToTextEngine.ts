@@ -32,7 +32,8 @@ export class SpeechToTextEngine {
   }
 
   /**
-   * Proactively triggers browser microphone permission prompt
+   * Proactively triggers browser microphone permission prompt.
+   * Call this BEFORE starting SpeechRecognition to avoid `not-allowed` warnings.
    */
   public static async requestMicrophoneAccess(): Promise<{ granted: boolean; error?: string }> {
     if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
@@ -44,14 +45,29 @@ export class SpeechToTextEngine {
       stream.getTracks().forEach(track => track.stop());
       return { granted: true };
     } catch (err: any) {
-      console.warn("Microphone access request result:", err);
-      const isDenied = err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError';
-      return { 
-        granted: false, 
-        error: isDenied 
-          ? 'Microphone access was denied. Please allow microphone permission in your browser.' 
-          : err.message || 'Could not access microphone.' 
+      // Expected UX outcome (user dismissed/blocked) — don't spam console warning.
+      // Caller surfaces this via micError banner with typed-input fallback.
+      const isDenied = err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError' || err.name === 'SecurityError';
+      return {
+        granted: false,
+        error: isDenied
+          ? 'Microphone access was denied. Please allow microphone permission in your browser.'
+          : err.message || 'Could not access microphone.'
       };
+    }
+  }
+
+  /**
+   * Non-intrusive permission check (no prompt). Returns 'granted' | 'denied' | 'prompt' | 'unknown'.
+   */
+  public static async getMicrophonePermissionState(): Promise<string> {
+    try {
+      const perms: any = (navigator as any)?.permissions;
+      if (!perms?.query) return 'unknown';
+      const status = await perms.query({ name: 'microphone' as any });
+      return status?.state || 'unknown';
+    } catch {
+      return 'unknown';
     }
   }
 
@@ -98,13 +114,28 @@ export class SpeechToTextEngine {
     };
 
     this.recognition.onerror = (event: any) => {
-      console.warn("Speech recognition event error:", event.error);
-      if (event.error === 'not-allowed') {
+      const errType = event?.error as string | undefined;
+      // Benign / expected conditions: stay silent, keep listening if autoRestart is active.
+      // Must NOT surface as warnings — avoids "STT Error: Microphone access was denied" spam
+      // when the denial is already handled via requestMicrophoneAccess + micError banner.
+      if (errType === 'no-speech' || errType === 'aborted') {
+        return;
+      }
+      if (errType === 'not-allowed' || errType === 'service-not-allowed') {
         this.callbacks.onError?.('Microphone access was denied. Please allow microphone permission.');
         this.stop();
-      } else if (event.error === 'no-speech') {
-        // Normal when quiet, keep listening if autoRestart is active
+        return;
       }
+      if (errType === 'audio-capture') {
+        this.callbacks.onError?.('No microphone was found. Please connect a microphone and try again.');
+        this.stop();
+        return;
+      }
+      if (errType === 'network') {
+        // Transient network blip for the recognition service — autoRestart will recover.
+        return;
+      }
+      console.warn("Speech recognition event error:", errType);
     };
 
     this.recognition.onend = () => {

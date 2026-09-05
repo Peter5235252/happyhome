@@ -150,28 +150,30 @@ export const MemoryManagerModal: React.FC<MemoryManagerModalProps> = ({
     <AnimatePresence>
       {isOpen && (
         <div className="pointer-events-auto fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6">
-          {/* Frosted Glass Backdrop */}
+          {/* Frosted Glass Backdrop — instant, no fade-in delay */}
           <motion.div 
             id="memory-modal-backdrop"
-            initial={{ opacity: 0 }}
+            initial={false}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            transition={{ duration: 0.15 }}
-            className="absolute inset-0 frosted-glass-backdrop"
+            transition={{ duration: 0.12 }}
+            style={{ opacity: 1 }}
+            className="absolute inset-0 frosted-glass-backdrop frosted-instant"
             onClick={() => {
               sound.playTap();
               onClose();
             }}
           />
 
-          {/* Frosted Glass Modal Container */}
+          {/* Frosted Glass Modal Container — instant appear */}
           <motion.div
             id="memory-modal-container"
-            initial={{ opacity: 0, scale: 0.98, y: 8 }}
+            initial={false}
             animate={{ opacity: 1, scale: 1, y: 0 }}
             exit={{ opacity: 0, scale: 0.98, y: 6 }}
-            transition={{ duration: 0.15, ease: 'easeOut' }}
-            className="relative w-full max-w-2xl max-h-[85vh] flex flex-col rounded-2xl frosted-glass-panel text-neutral-100 shadow-2xl overflow-hidden z-10 transform-gpu"
+            transition={{ duration: 0.12, ease: 'easeOut' }}
+            style={{ opacity: 1 }}
+            className="relative w-full max-w-2xl max-h-[85vh] flex flex-col rounded-2xl frosted-glass-panel frosted-instant text-neutral-100 shadow-2xl overflow-hidden z-10 transform-gpu"
           >
             {/* Modal Header */}
             <div className="flex items-center justify-between px-6 py-4 border-b border-white/10 bg-white/[0.02]">

@@ -47,3 +47,15 @@
   border: 1px solid rgba(255, 255, 255, 0.08);
   transform: translateZ(0);
 }
+
+/* Instant-appear variant for Listening popup + AI assistant modal.
+   Forces backdrop-filter to composite on first frame:
+   no transition/animation on the glass itself (parent motion uses initial={false}). */
+.frosted-instant {
+  transition: none !important;
+  animation: none !important;
+  transform: translateZ(0);
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+  contain: paint;
+}

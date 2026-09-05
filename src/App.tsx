@@ -370,13 +370,48 @@ export default function App() {
       if (sttRef.current) {
         sttRef.current.start();
         setVoiceState('listening');
+      } else if (isVoiceActive) {
+        // Engine was never started due to initial denial — create it now so
+        // "Allow Mic" retries actually resume listening instead of doing nothing.
+        const stt = new SpeechToTextEngine({
+          onInterimTranscript: (text) => {
+            if (naturalVoice.getIsSpeaking()) {
+              if (abortControllerRef.current) {
+                abortControllerRef.current.abort();
+                abortControllerRef.current = null;
+              }
+              naturalVoice.stop();
+            }
+            setVoiceState('listening');
+            setTranscript(text);
+          },
+          onFinalTranscript: (text) => {
+            handleUserVoiceMessage(text);
+          },
+          onError: (err) => {
+            const msg = typeof err === 'string' ? err : 'Microphone access was denied.';
+            if (msg.toLowerCase().includes('denied') || msg.toLowerCase().includes('permission') || msg.toLowerCase().includes('not-allowed') || msg.toLowerCase().includes('no microphone')) {
+              setMicError(msg);
+              setVoiceState('idle');
+            }
+          },
+          onStateChange: (sttState) => {
+            if (sttState === 'listening') {
+              setVoiceState((prev) => (prev === 'speaking' || prev === 'thinking' ? prev : 'listening'));
+            }
+          }
+        });
+        stt.start();
+        sttRef.current = stt;
+        setVoiceState('listening');
       }
     } else {
       setMicError(result.error || 'Microphone access was denied. Please allow microphone permission.');
+      setVoiceState('idle');
     }
-  }, []);
+  }, [isVoiceActive, handleUserVoiceMessage]);
 
-  const toggleVoiceMode = useCallback(() => {
+  const toggleVoiceMode = useCallback(async () => {
     if (isVoiceActive) {
       // Session ending: Consolidate cross-session memory into cloud Firestore
       if (conversationHistory.length > 0) {
@@ -414,9 +449,27 @@ export default function App() {
     setLastResponse(welcome);
     naturalVoice.speak(welcome, {
       onEnd: () => {
-        setVoiceState('listening');
+        // Only return to listening if mic is usable (no permission error)
+        setVoiceState((prev) => (prev === 'speaking' || prev === 'listening' ? 'listening' : prev));
       }
     });
+
+    // Proactively request mic permission BEFORE starting SpeechRecognition.
+    // This avoids the `not-allowed` STT warning entirely when blocked —
+    // we show the inline "Allow Mic" banner + typed-input fallback instead.
+    try {
+      const permission = await SpeechToTextEngine.requestMicrophoneAccess();
+      if (!permission.granted) {
+        setMicError(permission.error || 'Microphone access was denied. Please allow microphone permission.');
+        setVoiceState('idle');
+        return;
+      }
+    } catch {
+      setMicError('Microphone access was denied. Please allow microphone permission.');
+      setVoiceState('idle');
+      return;
+    }
+    setMicError(null);
 
     // Start STT Engine with real-time continuous interruption detection
     const stt = new SpeechToTextEngine({
@@ -436,9 +489,12 @@ export default function App() {
         handleUserVoiceMessage(text);
       },
       onError: (err) => {
-        console.warn("STT Error:", err);
-        if (err.toLowerCase().includes('denied') || err.toLowerCase().includes('permission') || err.toLowerCase().includes('not-allowed')) {
-          setMicError(err);
+        // Permission denials are expected UX, not console warnings.
+        // Surface them silently via the micError banner; typed input keeps working.
+        const msg = typeof err === 'string' ? err : 'Microphone access was denied.';
+        if (msg.toLowerCase().includes('denied') || msg.toLowerCase().includes('permission') || msg.toLowerCase().includes('not-allowed') || msg.toLowerCase().includes('no microphone')) {
+          setMicError(msg);
+          setVoiceState('idle');
         }
       },
       onStateChange: (sttState) => {
