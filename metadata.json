@@ -1,0 +1,6 @@
+{
+  "name": "Happy Home WebGPU Raytracer",
+  "description": "Photorealistic WebGPU ray tracing and global illumination pipeline featuring real-time godrays, volumetric atmosphere, and PBR materials.",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

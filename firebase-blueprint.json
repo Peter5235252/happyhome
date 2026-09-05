@@ -1,0 +1,83 @@
+{
+  "entities": {
+    "UserMemory": {
+      "title": "UserMemory",
+      "description": "Cross-session memory profile and creative preferences summarized by the AI.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Unique identifier for the user profile."
+        },
+        "summary": {
+          "type": "string",
+          "description": "Overall natural language memory summary of the user."
+        },
+        "facts": {
+          "type": "array",
+          "description": "Key factual preferences and creative notes remembered about the user."
+        },
+        "sessionCount": {
+          "type": "number",
+          "description": "Total number of completed voice sessions."
+        },
+        "lastSessionEnd": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp when the last session concluded."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp of the last memory update."
+        }
+      },
+      "required": ["userId", "summary", "facts", "updatedAt"]
+    },
+    "MemoryItem": {
+      "title": "MemoryItem",
+      "description": "An individual granular memory fact or preference that the user can view, edit, or delete.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique ID of the memory item."
+        },
+        "userId": {
+          "type": "string",
+          "description": "User this memory belongs to."
+        },
+        "category": {
+          "type": "string",
+          "enum": ["preference", "creative_style", "fact", "custom_instruction"],
+          "description": "Category of the remembered item."
+        },
+        "text": {
+          "type": "string",
+          "description": "The exact fact or preference text."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When this memory was recorded."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When this memory was last modified."
+        }
+      },
+      "required": ["id", "userId", "category", "text", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/user_memories/{userId}": {
+      "schema": "UserMemory",
+      "description": "Cross-session consolidated memory document for the user."
+    },
+    "/user_memories/{userId}/items/{itemId}": {
+      "schema": "MemoryItem",
+      "description": "Granular individual memory items that can be transparently managed."
+    }
+  }
+}

@@ -1,0 +1,49 @@
+@import "tailwindcss";
+
+@layer base {
+  html, body, #root {
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+    background-color: #0a0a0a;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+}
+
+/* Polished Frosted Glass Utilities - Hardware Accelerated & Instant */
+.frosted-glass {
+  background: rgba(10, 10, 10, 0.55);
+  backdrop-filter: blur(24px) saturate(180%);
+  -webkit-backdrop-filter: blur(24px) saturate(180%);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  transform: translateZ(0);
+  will-change: transform, opacity;
+}
+
+.frosted-glass-panel {
+  background: rgba(10, 10, 10, 0.55);
+  backdrop-filter: blur(24px) saturate(180%);
+  -webkit-backdrop-filter: blur(24px) saturate(180%);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  transform: translateZ(0);
+  will-change: transform, opacity;
+}
+
+.frosted-glass-backdrop {
+  background: rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  transform: translateZ(0);
+  will-change: opacity;
+}
+
+.frosted-glass-subcard {
+  background: rgba(20, 20, 22, 0.45);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  transform: translateZ(0);
+}

@@ -1,0 +1,13 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Cross-session user memories and memory items
+    match /user_memories/{userId} {
+      allow read, write: if true;
+      
+      match /items/{itemId} {
+        allow read, write: if true;
+      }
+    }
+  }
+}
