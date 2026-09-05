@@ -84,16 +84,14 @@ export const VoiceAssistantPill: React.FC<VoiceAssistantPillProps> = ({
       {isActive && (
         <motion.div
           key="voice-assistant-pill"
-          // Instant frosted-glass appear: skip enter animation so backdrop-filter
-          // composites on first frame instead of fading in blurred.
-          initial={false}
+          initial={{ opacity: 0, y: -20, scale: 0.98 }}
           animate={{ opacity: 1, y: 0, scale: 1 }}
-          exit={{ opacity: 0, y: -8, scale: 0.98 }}
-          transition={{ duration: 0.12, ease: 'easeOut' }}
-          style={{ opacity: 1 }}
+          exit={{ opacity: 0, y: -20, scale: 0.98 }}
+          transition={{ duration: 0.15, ease: 'easeOut' }}
           className="pointer-events-auto fixed top-4 left-1/2 -translate-x-1/2 z-50 flex flex-col items-center max-w-lg w-[94vw] sm:w-[32rem] transform-gpu"
         >
-          {/* Instant Frosted glass card — backdrop applied synchronously, no transition */}
+          {/* Frosted glass card — filter composites instantly on first frame (see .frosted-instant),
+              opacity fades smoothly together with the slide/fade above */}
           <div
             className="w-full rounded-2xl frosted-glass-panel frosted-instant p-3.5 shadow-2xl text-neutral-100 overflow-hidden transform-gpu"
           >

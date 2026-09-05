@@ -48,11 +48,13 @@
   transform: translateZ(0);
 }
 
-/* Instant-appear variant for Listening popup + AI assistant modal.
-   Forces backdrop-filter to composite on first frame:
-   no transition/animation on the glass itself (parent motion uses initial={false}). */
+/* Instant-filter variant for Listening popup + AI assistant modal.
+   backdrop-filter composites on the very first animation frame (GPU-promoted),
+   while opacity still fades smoothly via motion (0 -> 1, same 0.15s easeOut as content)
+   so glass and UI start together with no abrupt pop and no post-animation delay. */
 .frosted-instant {
-  transition: none !important;
+  transition-property: backdrop-filter, background-color, border-color !important;
+  transition-duration: 0s !important;
   animation: none !important;
   transform: translateZ(0);
   backface-visibility: hidden;
