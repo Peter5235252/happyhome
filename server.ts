@@ -644,10 +644,63 @@ ${WEBGPU_SAFETY_CONSTITUTION}
 CORE AGENTIC BEHAVIORS:
 1. CHAIN ACTIONS FREELY: You can call multiple tools in a single response! For instance, when requested to make an evening scene, seamlessly chain 'setLighting', 'batchCreateObjects' (for glowing lanterns along the walkway), and 'setCamera' for a cinematic angle. For deep visual rewrites, chain getSceneDiagnostics -> updateSceneShader or compileCustomComputePipeline -> setRenderPipelineSettings.
 2. PREFER SAFE INCREMENTAL SHADERS: use createObject/batchCreateObjects + updateSceneShader first. Only use compileCustomComputePipeline when the user explicitly asks for a new look that hooks cannot express, and ALWAYS call getSceneDiagnostics first so workgroup sizes fit the real device.
-3. NATURAL & CONVERSATIONAL VOICE: ALWAYS provide a warm, genuine, conversational spoken response in natural English. Explain what you created or adjusted, share your creative thinking, and invite the user into the creative flow.
-4. NEVER USE ROBOTIC FALLBACK TEMPLATES: Avoid repetitive phrases like "I have placed that object for you" or "Ready for your next command". Speak with authentic personality, enthusiasm, and style.
-5. SPOKEN AUDIO RULES: Your speech will be read aloud. Keep it concise (1 to 3 natural sentences). Do not use markdown symbols (*, #, \`, bullets, emojis) in the spoken text.
+3. TONE — INFORMAL, FRIENDLY, ENTHUSIASTIC: Sound like an excited friend showing off their cottage, never corporate, never robotic. No filler openers ("As an AI...", "Great question..."). Start with the point.
+4. BREVITY IS MANDATORY (every reply, all providers): MAX 2 short sentences, under 45 words total, one idea per reply. NEVER write lists, bullets, numbers, dashes, markdown, or emojis in speech. If asked what you can do, tease 2-3 powers in ONE flowing sentence and invite them to try something ("I can scatter lanterns, paint the sunset, and swoop the camera — say the word!").
+5. SPOKEN AUDIO RULES: Your speech will be read aloud AND hard-truncated past ~380 characters, so front-load the point. Keep it concise (1 to 2 natural sentences). Do not use markdown symbols (*, #, \`, bullets, emojis) in the spoken text.
 6. ON SHADER REJECTION: if the system reports a WGSL validation error, explain it in plain language in your NEXT spoken turn, keep the last good pipeline running, and offer a corrected retry — never silently retry in a loop.`;
+}
+
+// ---------------------------------------------------------------------------
+// BREVITY ENFORCEMENT (all LLMs, all providers)
+// The voice UI speaks `speechText` aloud: long bulleted answers like the one
+// reported ("I can direct the entire Happy Home world. I can: - Add... -
+// Change... - Shape...") are unusable when spoken. Three layers enforce the
+// concise, informal, friendly tone on every provider:
+//  1. System prompt tone/brevity rules (above).
+//  2. Per-provider output token caps (builders below).
+//  3. This server-side hard truncate: strips list markup and cuts past
+//     MAX_SPEECH_CHARS at a sentence boundary. Guaranteed short speech even
+//     if a model ignores 1+2.
+// ---------------------------------------------------------------------------
+export const MAX_SPEECH_CHARS = 380;
+export const CHAT_MAX_OUTPUT_TOKENS = 200;
+export const RESPONSES_TOOL_MAX_OUTPUT_TOKENS = 1000; // includes reasoning tokens
+export const RESPONSES_TEXT_MAX_OUTPUT_TOKENS = 250;
+export const CLAUDE_MAX_TOKENS = 220;
+export const GEMINI_MAX_OUTPUT_TOKENS = 200;
+export const COMPAT_MAX_TOKENS = 200; // xAI / Mistral chat completions
+
+export function enforceConciseSpeech(text: unknown): string {
+  let s = typeof text === 'string' ? text : '';
+  s = s
+    .replace(/[*#`_]/g, '')
+    .replace(/\r/g, '')
+    .split('\n')
+    .map((line) => line.replace(/^\s*(?:[-–—•]|\d+[.)])\s+/, ''))
+    .join(' ')
+    .replace(/\s+-\s+/g, ', ') // mid-line "- " list markers ("I can: - Add, - Change")
+    .replace(/:\s*,\s*/g, ': ') // tidy "word:, next" left by the rule above
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (s.length > MAX_SPEECH_CHARS) {
+    const cut = s.slice(0, MAX_SPEECH_CHARS);
+    const end = Math.max(cut.lastIndexOf('. '), cut.lastIndexOf('! '), cut.lastIndexOf('? '));
+    s = (end > MAX_SPEECH_CHARS * 0.4 ? cut.slice(0, end + 1) : cut).trim();
+  }
+  return s;
+}
+
+/** Gemini generation config. Pure (exported for tests). */
+export function buildGeminiConfig(systemText: string | undefined, withTools: boolean): Record<string, any> {
+  const config: Record<string, any> = {
+    temperature: 0.75,
+    maxOutputTokens: GEMINI_MAX_OUTPUT_TOKENS,
+  };
+  if (systemText !== undefined) config.systemInstruction = systemText;
+  if (withTools) {
+    config.tools = [{ functionDeclarations: GEMINI_FUNCTION_DECLARATIONS as any }];
+  }
+  return config;
 }
 
 async function handleGeminiCall(model: string, apiKey: string | undefined, message: string, context: any, history: any[] = []) {
@@ -668,15 +721,7 @@ async function handleGeminiCall(model: string, apiKey: string | undefined, messa
   const response = await genAI.models.generateContent({
     model: apiModel,
     contents,
-    config: {
-      systemInstruction: buildSystemPrompt(context),
-      temperature: 0.75,
-      tools: [
-        {
-          functionDeclarations: GEMINI_FUNCTION_DECLARATIONS as any
-        }
-      ]
-    }
+    config: buildGeminiConfig(buildSystemPrompt(context), true),
   });
 
   const candidate = response.candidates?.[0];
@@ -707,12 +752,12 @@ async function handleGeminiCall(model: string, apiKey: string | undefined, messa
             role: "user",
             parts: [
               {
-                text: `${buildSystemPrompt(context)}\n\nThe user requested: "${message}".\nYou just performed these 3D scene actions: ${JSON.stringify(functionCalls)}.\nIn 1-2 warm, natural, spoken sentences without markdown or bullet points, describe what you did and converse with the user.`
+                text: `${buildSystemPrompt(context)}\n\nThe user requested: "${message}".\nYou just performed these 3D scene actions: ${JSON.stringify(functionCalls)}.\nIn exactly 1-2 short, warm, spoken sentences (under 45 words, no lists, no markdown), describe what you did and converse with the user.`
               }
             ]
           }
         ],
-        config: { temperature: 0.75 }
+        config: buildGeminiConfig(undefined, false),
       });
       speechText = summaryRes.text || "";
     } catch {
@@ -769,16 +814,22 @@ export function buildChatCompletionsBody(
   withTools: boolean
 ): Record<string, any> {
   const body: Record<string, any> = { model: apiModel, messages };
+  const firstPartyReasoning = isFirstPartyOpenAI(endpointUrl) && isOpenAIReasoningModel(apiModel);
   if (withTools) {
     body.tools = OPENAI_TOOLS;
-    if (isFirstPartyOpenAI(endpointUrl) && isOpenAIReasoningModel(apiModel)) {
+    if (firstPartyReasoning) {
       // Documented workaround: tools without reasoning on Chat Completions.
       body.reasoning_effort = 'none';
+      body.max_completion_tokens = CHAT_MAX_OUTPUT_TOKENS;
     } else {
       body.temperature = 0.75;
+      body.max_tokens = COMPAT_MAX_TOKENS;
     }
-  } else if (!(isFirstPartyOpenAI(endpointUrl) && isOpenAIReasoningModel(apiModel))) {
+  } else if (firstPartyReasoning) {
+    body.max_completion_tokens = CHAT_MAX_OUTPUT_TOKENS;
+  } else {
     body.temperature = 0.75;
+    body.max_tokens = COMPAT_MAX_TOKENS;
   }
   return body;
 }
@@ -805,6 +856,10 @@ export function buildResponsesBody(apiModel: string, messages: any[], withTools:
     body.tools = toResponsesTools(OPENAI_TOOLS);
     // gpt-6-astra has no `none` level; medium is the documented default balance.
     body.reasoning = { effort: 'medium' };
+    // Room for reasoning tokens; speech is still hard-truncated downstream.
+    body.max_output_tokens = RESPONSES_TOOL_MAX_OUTPUT_TOKENS;
+  } else {
+    body.max_output_tokens = RESPONSES_TEXT_MAX_OUTPUT_TOKENS;
   }
   return body;
 }
@@ -874,7 +929,7 @@ async function handleOpenAIResponsesCall(
         key,
         buildResponsesBody(apiModel, [
           { role: 'system', content: buildSystemPrompt(context) },
-          { role: 'user', content: `You just executed these actions for the user's prompt "${message}": ${JSON.stringify(functionCalls)}. In 1-2 natural spoken sentences, tell the user what you crafted or modified.` },
+          { role: 'user', content: `You just executed these actions for the user's prompt "${message}": ${JSON.stringify(functionCalls)}. In exactly 1-2 short spoken sentences (under 45 words, no lists, no markdown), tell the user what you crafted or modified.` },
         ], false)
       );
       const parsed = parseResponsesOutput(summaryData);
@@ -932,13 +987,25 @@ export async function handleOpenAICompatibleCall(
     try {
       const sData = await postJson(endpointUrl, key, buildChatCompletionsBody(endpointUrl, apiModel, [
         { role: "system", content: buildSystemPrompt(context) },
-        { role: "user", content: `You just executed these actions for the user's prompt "${message}": ${JSON.stringify(functionCalls)}. In 1-2 natural spoken sentences, tell the user what you crafted or modified.` }
+        { role: "user", content: `You just executed these actions for the user's prompt "${message}": ${JSON.stringify(functionCalls)}. In exactly 1-2 short spoken sentences (under 45 words, no lists, no markdown), tell the user what you crafted or modified.` }
       ], false));
       speechText = sData.choices?.[0]?.message?.content || "";
     } catch {}
   }
 
   return { speechText: speechText.trim(), functionCalls };
+}
+
+/** Claude Messages body. Pure (exported for tests). max_tokens is required by Anthropic. */
+export function buildClaudeBody(apiModel: string, systemText: string, messages: any[]): Record<string, any> {
+  return {
+    model: apiModel,
+    max_tokens: CLAUDE_MAX_TOKENS,
+    system: systemText,
+    messages,
+    tools: CLAUDE_TOOLS,
+    temperature: 0.75,
+  };
 }
 
 async function handleClaudeCall(model: string, key: string, message: string, context: any, history: any[] = []) {
@@ -955,14 +1022,7 @@ async function handleClaudeCall(model: string, key: string, message: string, con
       "anthropic-version": "2023-06-01",
       "content-type": "application/json"
     },
-    body: JSON.stringify({
-      model: apiModel,
-      max_tokens: 1024,
-      system: buildSystemPrompt(context),
-      messages,
-      tools: CLAUDE_TOOLS,
-      temperature: 0.75
-    })
+    body: JSON.stringify(buildClaudeBody(apiModel, buildSystemPrompt(context), messages))
   });
 
   if (!res.ok) {
@@ -1126,11 +1186,10 @@ async function startServer() {
         speechText = `${speechText} Note: I blocked an unsafe shader update (${rejectionNotes[0].slice(0, 160)}). The last good visuals are still running.`.trim();
       }
 
-      // Clean speech text
-      speechText = (speechText || "")
-        .replace(/[*#`_]/g, '')
-        .replace(/\n+/g, ' ')
-        .trim();
+      // Hard brevity guarantee (all providers): strip list markup and truncate
+      // past MAX_SPEECH_CHARS at a sentence boundary so speech stays short,
+      // informal, and speakable even if a model ignores the prompt + token caps.
+      speechText = enforceConciseSpeech(speechText);
 
       if (!speechText) {
         speechText = "I've updated the 3D scene according to your vision.";
