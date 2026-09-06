@@ -16,6 +16,7 @@ import {
   AlertCircle
 } from 'lucide-react';
 import { SUPPORTED_MODELS, PROVIDER_LIST, findModelInfo } from '../constants/models';
+import { VOICE_OPTIONS } from '../audio/KokoroVoiceSynthesizer';
 import { sound } from '../audio/soundEffects';
 
 export interface VoiceAssistantPillProps {
@@ -32,6 +33,8 @@ export interface VoiceAssistantPillProps {
   onSubmitTextCommand?: (text: string) => void;
   onSelectModel: (modelId: string) => void;
   onUpdateApiKey: (providerId: string, key: string) => void;
+  ttsVoice?: string;
+  onSelectTtsVoice?: (voiceId: string) => void;
   onToggle: () => void;
   onInterrupt?: () => void;
   onOpenMemoryManager?: () => void;
@@ -51,6 +54,8 @@ export const VoiceAssistantPill: React.FC<VoiceAssistantPillProps> = ({
   onSubmitTextCommand,
   onSelectModel,
   onUpdateApiKey,
+  ttsVoice,
+  onSelectTtsVoice,
   onToggle,
   onInterrupt,
   onOpenMemoryManager,
@@ -347,8 +352,40 @@ export const VoiceAssistantPill: React.FC<VoiceAssistantPillProps> = ({
                     })}
                   </div>
 
-                  {/* Minimalist API Key Input for Provider */}
+                  {/* Neural Voice Picker (free on-device Kokoro, no API key needed) */}
                   <div className="pt-2 border-t border-white/5 space-y-1">
+                    <div className="flex items-center justify-between text-[11px] text-neutral-400">
+                      <span className="flex items-center gap-1">
+                        <Volume2 className="h-3 w-3 text-neutral-400" />
+                        <span>Voice</span>
+                      </span>
+                      <span className="text-emerald-400 text-[10px]">Free · On-device</span>
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                      {VOICE_OPTIONS.map((voice) => {
+                        const isCurrentVoice = (ttsVoice || VOICE_OPTIONS[0].id) === voice.id;
+                        return (
+                          <button
+                            key={voice.id}
+                            onClick={() => {
+                              sound.playTap();
+                              onSelectTtsVoice?.(voice.id);
+                            }}
+                            className={`flex items-center justify-between px-2.5 py-2 rounded-lg text-xs transition-all text-left ${
+                              isCurrentVoice
+                                ? 'bg-white/15 text-white border border-white/30 font-medium'
+                                : 'bg-white/5 text-neutral-300 hover:bg-white/10 hover:text-white border border-white/5'
+                            }`}
+                          >
+                            <span className="truncate">{voice.label}</span>
+                            {isCurrentVoice && <Check className="h-3 w-3 text-emerald-400 shrink-0 ml-1.5" />}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* Minimalist API Key Input for Provider */}                  <div className="pt-2 border-t border-white/5 space-y-1">
                     <div className="flex items-center justify-between text-[11px] text-neutral-400">
                       <span className="flex items-center gap-1">
                         <Key className="h-3 w-3 text-neutral-400" />

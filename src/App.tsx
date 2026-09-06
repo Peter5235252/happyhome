@@ -8,7 +8,7 @@ import { PerformanceStats, RenderSettings, DynamicObject } from './renderer/type
 import { MinimalUI } from './components/MinimalUI';
 import { WebGPUFallbackNotice } from './components/WebGPUFallbackNotice';
 import { SpeechToTextEngine } from './audio/SpeechToTextEngine';
-import { naturalVoice } from './audio/NaturalVoiceSynthesizer';
+import { naturalVoice } from './audio/KokoroVoiceSynthesizer';
 import { VoiceAssistantPill } from './components/VoiceAssistantPill';
 import { MemoryManagerModal } from './components/MemoryManagerModal';
 import { SUPPORTED_MODELS, normalizeModelId, resolveApiModelId } from './constants/models';
@@ -89,6 +89,14 @@ export default function App() {
     const normalized = normalizeModelId(modelId);
     setSelectedModel(normalized);
     localStorage.setItem('voice_assistant_model', normalized);
+  }, []);
+
+  // Neural TTS voice choice (Kokoro, persisted inside the engine).
+  const [ttsVoice, setTtsVoice] = useState<string>(() => naturalVoice.getVoice());
+  const handleSelectTtsVoice = useCallback((voiceId: string) => {
+    if (naturalVoice.setVoice(voiceId)) {
+      setTtsVoice(naturalVoice.getVoice());
+    }
   }, []);
 
   const handleUpdateApiKey = useCallback((providerId: string, key: string) => {
@@ -536,6 +544,10 @@ export default function App() {
     setMicError(null);
     setLastAction(null);
 
+    // Start downloading the neural voice model in the background while the
+    // greeting plays, so the first reply speaks with minimal delay.
+    naturalVoice.preload();
+
     // Initial greeting personalized with remembered profile if available
     const welcome = userMemory?.facts && userMemory.facts.length > 0
       ? "Welcome back! I remember your preferences. How would you like to reshape the scene?"
@@ -901,6 +913,8 @@ export default function App() {
             onSubmitTextCommand={(text) => handleUserVoiceMessage(text)}
             onSelectModel={handleSelectModel}
             onUpdateApiKey={handleUpdateApiKey}
+            ttsVoice={ttsVoice}
+            onSelectTtsVoice={handleSelectTtsVoice}
             onInterrupt={handleInterrupt}
             onOpenMemoryManager={() => setShowMemoryModal(true)}
             onToggle={() => {
