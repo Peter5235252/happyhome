@@ -15,7 +15,7 @@ import {
   Send,
   AlertCircle
 } from 'lucide-react';
-import { SUPPORTED_MODELS, PROVIDER_LIST } from '../constants/models';
+import { SUPPORTED_MODELS, PROVIDER_LIST, findModelInfo } from '../constants/models';
 import { sound } from '../audio/soundEffects';
 
 export interface VoiceAssistantPillProps {
@@ -58,7 +58,10 @@ export const VoiceAssistantPill: React.FC<VoiceAssistantPillProps> = ({
 }) => {
   const [showMenu, setShowMenu] = useState(false);
   const [typedInput, setTypedInput] = useState('');
-  const currentModel = SUPPORTED_MODELS.find(m => m.id === selectedModel) || SUPPORTED_MODELS[1];
+  // Resolve via shared helper (matches id OR API alias, explicit default).
+  // Previously this matched `id` only with a hardcoded-index Gemini fallback,
+  // so any alias/stale value rendered as Gemini even after picking another model.
+  const currentModel = findModelInfo(selectedModel);
   const [activeProviderTab, setActiveProviderTab] = useState<'gemini' | 'openai' | 'xai' | 'anthropic' | 'mistral'>(
     currentModel.providerId
   );

@@ -128,14 +128,28 @@ function validateCustomWGSLServer(
   return { ok: errors.length === 0, errors };
 }
 
-// Normalize historic / alias model ids to exact provider API ids (verified Sept 2026).
-function resolveApiModelIdServer(uiModelId: string): string {
+// Normalize historic / alias model ids to exact provider API ids (verified Sept 2026:
+// Gemini gemini-3.5/3.6/3.7/3.8-flash, OpenAI gpt-5.6-luna/terra/sol + gpt-6-astra,
+// xAI grok-4.6 (dot), Anthropic claude-sonnet-5 / claude-opus-5 / claude-fable-5-1
+// (hyphen), Mistral *-latest aliases). Unknown values fall back to the default
+// EXPLICITLY with a warning — never silently route to Gemini.
+const KNOWN_API_MODEL_IDS = new Set([
+  'gemini-3.5-flash', 'gemini-3.6-flash', 'gemini-3.7-flash', 'gemini-3.8-flash',
+  'gpt-5.6-luna', 'gpt-5.6-terra', 'gpt-5.6-sol', 'gpt-6-astra',
+  'grok-4.6',
+  'mistral-large-latest', 'mistral-small-latest', 'mistral-medium-latest',
+  'claude-sonnet-5', 'claude-opus-5', 'claude-fable-5-1',
+]);
+
+export function resolveApiModelIdServer(uiModelId: string): string {
   if (!uiModelId) return 'gemini-3.6-flash';
   if (uiModelId === 'claude-fable-5.1') return 'claude-fable-5-1'; // historic dot-bug
   if (uiModelId === 'mistral-large-3') return 'mistral-large-latest';
   if (uiModelId === 'mistral-small-4') return 'mistral-small-latest';
   if (uiModelId === 'mistral-medium-3.5') return 'mistral-medium-latest';
-  return uiModelId;
+  if (KNOWN_API_MODEL_IDS.has(uiModelId)) return uiModelId;
+  console.warn(`Unknown model id "${uiModelId}" — falling back to gemini-3.6-flash.`);
+  return 'gemini-3.6-flash';
 }
 
 const OPENAI_TOOLS = [
@@ -1039,7 +1053,9 @@ async function startServer() {
         }
         result = await handleClaudeCall(model, key, message, context, history);
       } else {
-        // Fallback to default Gemini
+        // Fallback to default Gemini (should be unreachable after resolveApiModelIdServer
+        // validation above; logged so silent Gemini routing is always observable).
+        console.warn(`No provider matched model "${model}" — falling back to gemini-3.6-flash.`);
         result = await handleGeminiCall("gemini-3.6-flash", apiKey, message, context, history);
       }
 

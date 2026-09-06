@@ -71,21 +71,41 @@ export const SUPPORTED_MODELS: AIModelInfo[] = [
   { id: 'claude-fable-5-1', apiModelId: 'claude-fable-5-1', name: 'Claude Fable 5.1', provider: 'Claude', providerId: 'anthropic', badge: 'New', contextWindow: 1_000_000, verifiedAsOf: '2026-09-06' },
 ];
 
+/** Default model when nothing valid is stored/selected. */
+export const DEFAULT_MODEL_ID = 'gemini-3.6-flash';
+
 /**
- * Normalize a possibly-stale model id from localStorage to the current valid id.
- * Handles the historic bug where the app stored "claude-fable-5.1" (dot) which is
- * not a valid Anthropic API ID (must be "claude-fable-5-1" with hyphen).
+ * Normalize any stored/selected value to the canonical UI `id`.
+ * - Historic bug: the app once stored "claude-fable-5.1" (dot), which is not a
+ *   valid Anthropic API ID (must be "claude-fable-5-1" with hyphen).
+ * - API aliases (e.g. "mistral-large-latest") are canonicalized to their UI id
+ *   (e.g. "mistral-large-3") so state NEVER holds a non-id value. Letting an
+ *   alias into state was the "selects X, shows Gemini" bug: the model pill only
+ *   matched `id` and fell back to the Gemini entry for anything else.
  */
 export function normalizeModelId(stored: string | null | undefined): string {
-  if (!stored) return 'gemini-3.6-flash';
+  if (!stored) return DEFAULT_MODEL_ID;
   if (stored === 'claude-fable-5.1') return 'claude-fable-5-1';
-  const known = SUPPORTED_MODELS.some((m) => m.id === stored || m.apiModelId === stored);
-  return known ? stored : 'gemini-3.6-flash';
+  const byId = SUPPORTED_MODELS.find((m) => m.id === stored);
+  if (byId) return byId.id;
+  const byApi = SUPPORTED_MODELS.find((m) => m.apiModelId === stored);
+  if (byApi) return byApi.id;
+  return DEFAULT_MODEL_ID;
 }
 
-/** Resolve the exact string to send to the provider API. */
+/** Resolve the exact string to send to the provider API (verified Sept 2026). */
 export function resolveApiModelId(uiModelId: string): string {
   const normalized = normalizeModelId(uiModelId);
   const found = SUPPORTED_MODELS.find((m) => m.id === normalized || m.apiModelId === normalized);
-  return found?.apiModelId ?? normalized;
+  return found?.apiModelId ?? DEFAULT_MODEL_ID;
+}
+
+/** Look up display info for any stored/selected value (id or API alias). */
+export function findModelInfo(stored: string | null | undefined): AIModelInfo {
+  const normalized = normalizeModelId(stored);
+  return (
+    SUPPORTED_MODELS.find((m) => m.id === normalized) ??
+    SUPPORTED_MODELS.find((m) => m.id === DEFAULT_MODEL_ID) ??
+    SUPPORTED_MODELS[0]
+  );
 }
