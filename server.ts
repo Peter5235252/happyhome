@@ -600,17 +600,23 @@ const GEMINI_FUNCTION_DECLARATIONS = [
   }
 ];
 
-function buildSystemPrompt(context: any): string {
+/** Max memory facts rendered into a prompt (unbounded lists bloat bodies + LLM input). */
+export const MAX_PROMPT_MEMORY_FACTS = 40;
+
+export function buildSystemPrompt(context: any): string {
   const objectsDesc = context?.dynamicObjects && context.dynamicObjects.length > 0
     ? context.dynamicObjects.map((o: any, idx: number) => `[#${idx} ${o.label || o.shape} at ${JSON.stringify(o.position || [])}]`).join(', ')
     : 'None currently.';
 
+  const memoryFacts: string[] = context?.memory?.facts || [];
+  const recentFacts = memoryFacts.slice(-MAX_PROMPT_MEMORY_FACTS);
+  const truncatedCount = memoryFacts.length - recentFacts.length;
   const memorySection = context?.memory
     ? `
 CROSS-SESSION USER MEMORY (Saved from previous sessions):
 - Memory Summary: ${context.memory.summary || "First meeting."}
-- Remembered Preferences & Facts:
-${(context.memory.facts || []).map((f: string) => `  • ${f}`).join('\n') || "  • None recorded yet."}
+- Remembered Preferences & Facts${truncatedCount > 0 ? ` (showing ${recentFacts.length} most recent of ${memoryFacts.length})` : ''}:
+${recentFacts.map((f: string) => `  • ${f}`).join('\n') || "  • None recorded yet."}
 *(Use this memory context naturally to personalize your creative suggestions, honor their aesthetic preferences, and remember their past creations!)*`
     : '';
 
@@ -984,11 +990,36 @@ async function handleClaudeCall(model: string, key: string, message: string, con
   return { speechText: speechText.trim(), functionCalls };
 }
 
+/**
+ * Express error-handling middleware (4 args) for oversized JSON bodies.
+ * body-parser raises `{ type: 'entity.too.large', status: 413 }` beyond the
+ * configured `express.json({ limit })`. Responds with JSON (including a
+ * speakable `speechText`) so API clients never receive an HTML error page.
+ * Exported for unit tests.
+ */
+export function requestTooLargeHandler(err: any, _req: any, res: any, next: any): void {
+  const isTooLarge = err && (err.type === 'entity.too.large' || err.status === 413);
+  if (!isTooLarge) {
+    next(err);
+    return;
+  }
+  console.warn(`Rejected oversized request body (${err.length || 'unknown'} bytes, limit exceeded).`);
+  res.status(413).json({
+    error: 'Request entity too large',
+    speechText: 'That request was too large to process. Please try a shorter message, or start a new voice session to reset the conversation.',
+    functionCalls: [],
+  });
+}
+
 async function startServer() {
   const app = express();
   const PORT = 3000;
 
-  app.use(express.json());
+  // Default express.json() caps bodies at 100kb, which trips
+  // PayloadTooLargeError once voice-agent context carries diagnostics
+  // snapshots, long memory-fact lists, history, or agentic WGSL payloads.
+  // 5mb comfortably fits legit traffic while still bounding abuse.
+  app.use(express.json({ limit: '5mb' }));
 
   // API health
   app.get("/api/health", (req, res) => {
@@ -1185,6 +1216,13 @@ OUTPUT FORMAT: Strict JSON only.
       });
     }
   });
+
+  // Central error handler for API routes. Must be registered after the routes
+  // (Express skips regular middleware once err is set) and before the Vite /
+  // static fallthrough. Converts PayloadTooLargeError into a JSON 413 the
+  // voice client can speak, instead of an HTML error page that surfaces as a
+  // generic failure.
+  app.use(requestTooLargeHandler);
 
   // Vite middleware for development
   if (process.env.NODE_ENV !== "production") {
