@@ -28,6 +28,8 @@ interface WorkerScope {
 
 const scope = self as unknown as WorkerScope;
 
+import { extractPcm, hasSpeakableContent } from './ttsText.ts';
+
 let tts: any = null;
 let loadPromise: Promise<any> | null = null;
 let currentToken = 0;
@@ -85,6 +87,11 @@ scope.onmessage = async (event: MessageEvent) => {
 
   const { token, text, voice, speed } = msg;
   currentToken = token;
+  if (typeof text !== 'string' || !hasSpeakableContent(text)) {
+    post({ type: 'done', token }); // nothing worth synthesizing: end silently
+    return;
+  }
+  let chunksSent = 0;
   try {
     const t = await ensureLoaded();
     if (token !== currentToken) return; // cancelled during load
@@ -96,18 +103,29 @@ scope.onmessage = async (event: MessageEvent) => {
 
     for await (const { audio } of stream) {
       if (token !== currentToken) return; // interrupted: drop chunk
-      const src: Float32Array = audio.data as Float32Array;
-      const copy = new Float32Array(src.length);
-      copy.set(src);
+      const pcm = extractPcm(audio);
+      if (!pcm) {
+        throw new Error('TTS chunk contained no PCM audio data.');
+      }
+      const copy = new Float32Array(pcm.data.length);
+      copy.set(pcm.data);
       post(
-        { type: 'chunk', token, sampleRate: audio.sampling_rate as number, pcm: copy },
+        { type: 'chunk', token, sampleRate: pcm.sampleRate, pcm: copy },
         [copy.buffer]
       );
+      chunksSent++;
     }
     if (token !== currentToken) return;
     post({ type: 'done', token });
   } catch (err) {
     if (token !== currentToken) return;
+    if (chunksSent > 0) {
+      // Partial audio already delivered: end gracefully so the user hears the
+      // reply instead of an error. The failure is still logged for diagnosis.
+      console.warn('Voice worker dropped trailing chunks:', err instanceof Error ? err.message : err);
+      post({ type: 'done', token });
+      return;
+    }
     post({ type: 'error', token, error: err instanceof Error ? err.message : String(err) });
   }
 };

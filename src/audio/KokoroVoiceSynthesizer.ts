@@ -57,14 +57,10 @@ interface PcmChunk {
   pcm: Float32Array;
 }
 
-/** Pure text cleanup (exported for tests). */
-export function cleanTextForSpeech(text: string): string {
-  return (text || '')
-    .replace(/\[\d+,\s*\d+,\s*\d+\]/g, '') // raw vector dumps like [0, 1, 2] (before brackets are stripped)
-    .replace(/[*_~`#[\]()]/g, '') // markdown symbols
-    .replace(/\s+/g, ' ')
-    .trim();
-}
+import { cleanTextForSpeech, extractPcm, hasSpeakableContent } from './ttsText.ts';
+
+// Re-exported so existing imports keep working.
+export { cleanTextForSpeech, extractPcm, hasSpeakableContent };
 
 function loadStoredVoice(): string {
   try {
@@ -160,9 +156,13 @@ export class KokoroVoiceSynthesizer {
       return;
     }
     // Stream messages carry generation tokens; stale ones are dropped.
+    // PCM is re-validated after the postMessage crossing: a malformed chunk
+    // is ignored instead of crashing playback.
     if (typeof msg.token !== 'number' || msg.token !== this.genToken) return;
     if (msg.type === 'chunk') {
-      this.pendingChunks.push({ sampleRate: msg.sampleRate, pcm: msg.pcm as Float32Array });
+      const pcm = extractPcm({ audio: msg.pcm, sampling_rate: msg.sampleRate });
+      if (!pcm) return;
+      this.pendingChunks.push({ sampleRate: pcm.sampleRate, pcm: pcm.data });
       this.wakeAll();
     } else if (msg.type === 'done') {
       this.streamDone = true;
@@ -268,7 +268,7 @@ export class KokoroVoiceSynthesizer {
   public speak(text: string, options: VoiceSynthesizerOptions = {}): Promise<void> {
     return new Promise((resolve) => {
       const cleaned = cleanTextForSpeech(text);
-      if (!cleaned) {
+      if (!cleaned || !hasSpeakableContent(cleaned)) {
         resolve();
         return;
       }
