@@ -6,6 +6,12 @@ import {defineConfig} from 'vite';
 export default defineConfig(() => {
   return {
     plugins: [react(), tailwindcss()],
+    // Kokoro TTS synthesis runs in a module Web Worker (src/audio/kokoro.worker.ts).
+    // 'es' is required: the default 'iife' worker format cannot build alongside
+    // code-split chunks (the lazy kokoro import). All modern browsers run ES workers.
+    worker: {
+      format: 'es' as const,
+    },
     resolve: {
       alias: {
         '@': path.resolve(__dirname, '.'),

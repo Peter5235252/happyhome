@@ -10,10 +10,14 @@
  * - https://www.npmjs.com/package/kokoro-js (v1.2.1)
  * - https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX
  *
- * Interruption: sentence-streamed synthesis (TextSplitterStream) is played
- * chunk-by-chunk through Web Audio. stop() kills all active sources instantly
- * and invalidates in-flight generation, so barge-in is immediate — the same
- * seamless-interruption contract the old engine provided.
+ * THREADING: all synthesis runs in `kokoro.worker.ts` (Web Worker). The main
+ * thread only plays PCM chunks through Web Audio. Running inference on the UI
+ * thread hard-locked the browser, so the worker boundary is load-bearing: no
+ * model import, download parsing, or inference may ever run here.
+ *
+ * Interruption: sentence-streamed synthesis is played chunk-by-chunk. stop()
+ * kills playback instantly, cancels the worker job, and invalidates the
+ * generation token, so barge-in is immediate.
  */
 
 export interface VoiceSynthesizerOptions {
@@ -45,9 +49,13 @@ export const VOICE_OPTIONS: TtsVoiceOption[] = [
 
 export const DEFAULT_VOICE_ID = 'af_heart';
 const VOICE_STORAGE_KEY = 'happyhome_tts_voice';
-const MODEL_ID = 'onnx-community/Kokoro-82M-v1.0-ONNX';
 
 export type TtsEngineStatus = 'unloaded' | 'loading' | 'ready' | 'error';
+
+interface PcmChunk {
+  sampleRate: number;
+  pcm: Float32Array;
+}
 
 /** Pure text cleanup (exported for tests). */
 export function cleanTextForSpeech(text: string): string {
@@ -69,8 +77,7 @@ function loadStoredVoice(): string {
 }
 
 export class KokoroVoiceSynthesizer {
-  private tts: any = null;
-  private loadPromise: Promise<any> | null = null;
+  private worker: Worker | null = null;
   private status: TtsEngineStatus = 'unloaded';
   private loadError: any = null;
   private voiceId: string = loadStoredVoice();
@@ -81,6 +88,15 @@ export class KokoroVoiceSynthesizer {
   private playResolvers: Set<() => void> = new Set();
   private genToken = 0;
   private isSpeaking = false;
+
+  // Single-flight streamed playback state for the current speak().
+  // waiters is a SET (not one slot): back-to-back speak() calls must wake
+  // every parked loop, or a superseded loop would hang forever holding a
+  // promise its caller still awaits.
+  private pendingChunks: PcmChunk[] = [];
+  private streamDone = false;
+  private streamError: any = null;
+  private waiters: Set<() => void> = new Set();
   private onProgress?: (fraction: number) => void;
 
   /** bytesLoaded/bytesTotal progress listener for model download UI. */
@@ -109,49 +125,63 @@ export class KokoroVoiceSynthesizer {
     return true;
   }
 
-  /** Start downloading/loading the model early (e.g. on voice-mode open). */
-  public preload(): Promise<void> {
-    return this.ensureLoaded()
-      .then(() => undefined)
-      .catch(() => undefined);
+  private ensureWorker(): Worker | null {
+    if (typeof window === 'undefined' || typeof Worker === 'undefined') return null;
+    if (!this.worker) {
+      // Vite bundles this as a separate worker chunk (model code included),
+      // so nothing heavy is ever parsed on the main thread.
+      this.worker = new Worker(new URL('./kokoro.worker.ts', import.meta.url), { type: 'module' });
+      this.worker.onmessage = (e: MessageEvent) => this.handleWorkerMessage(e.data);
+      this.worker.onerror = (e: ErrorEvent) => {
+        console.error('Neural voice worker error:', e.message || e);
+      };
+    }
+    return this.worker;
   }
 
-  private async ensureLoaded(): Promise<any> {
-    if (this.tts) return this.tts;
-    if (this.loadPromise) return this.loadPromise;
-    if (typeof window === 'undefined') {
-      throw new Error('Kokoro TTS requires a browser environment.');
+  private handleWorkerMessage(msg: any): void {
+    if (!msg) return;
+    if (msg.type === 'progress') {
+      if (typeof msg.loaded === 'number' && typeof msg.total === 'number' && msg.total > 0) {
+        try {
+          this.onProgress?.(msg.loaded / msg.total);
+        } catch {}
+      }
+      return;
     }
-
-    this.status = 'loading';
-    this.loadError = null;
-    this.loadPromise = (async () => {
-      // Dynamic import keeps kokoro + onnxruntime out of the main bundle chunk.
-      const { KokoroTTS } = await import('kokoro-js');
-      const instance = await KokoroTTS.from_pretrained(MODEL_ID, {
-        dtype: 'q8', // ~86MB, near-fp32 quality, runs everywhere (WASM)
-        device: 'wasm',
-        progress_callback: (p: any) => {
-          if (p && typeof p.loaded === 'number' && typeof p.total === 'number' && p.total > 0) {
-            try {
-              this.onProgress?.(p.loaded / p.total);
-            } catch {}
-          }
-        },
-      });
-      this.tts = instance;
+    if (msg.type === 'ready') {
       this.status = 'ready';
-      return instance;
-    })();
-
-    try {
-      return await this.loadPromise;
-    } catch (err) {
-      this.status = 'error';
-      this.loadError = err;
-      this.loadPromise = null; // allow retry on next speak()
-      throw err;
+      this.loadError = null;
+      return;
     }
+    if (msg.type === 'load-error') {
+      this.status = 'error';
+      this.loadError = msg.error;
+      return;
+    }
+    // Stream messages carry generation tokens; stale ones are dropped.
+    if (typeof msg.token !== 'number' || msg.token !== this.genToken) return;
+    if (msg.type === 'chunk') {
+      this.pendingChunks.push({ sampleRate: msg.sampleRate, pcm: msg.pcm as Float32Array });
+      this.wakeAll();
+    } else if (msg.type === 'done') {
+      this.streamDone = true;
+      this.wakeAll();
+    } else if (msg.type === 'error') {
+      this.streamError = msg.error || 'Synthesis failed in voice worker.';
+      this.wakeAll();
+    }
+  }
+
+  /** Start downloading/loading the model early (e.g. on voice-mode open). */
+  public preload(): Promise<void> {
+    const w = this.ensureWorker();
+    if (!w) return Promise.resolve();
+    if (this.status !== 'ready') this.status = 'loading';
+    try {
+      w.postMessage({ type: 'preload' });
+    } catch {}
+    return Promise.resolve();
   }
 
   private ensureAudioContext(): AudioContext | null {
@@ -210,10 +240,30 @@ export class KokoroVoiceSynthesizer {
     });
   }
 
+  private waitForChunk(): Promise<void> {
+    return new Promise((resolve) => {
+      const w = () => {
+        this.waiters.delete(w);
+        resolve();
+      };
+      this.waiters.add(w);
+    });
+  }
+
+  private wakeAll(): void {
+    for (const w of [...this.waiters]) {
+      try {
+        w();
+      } catch {}
+    }
+    this.waiters.clear();
+  }
+
   /**
-   * Speaks text with the neural voice. Resolves on completion, interruption,
-   * or load failure (failures surface via onError — there is intentionally no
-   * robotic Web Speech fallback).
+   * Speaks text with the neural voice. Synthesis runs in the worker; this
+   * thread only plays audio. Resolves on completion, interruption, or failure
+   * (failures surface via onError — there is intentionally no robotic Web
+   * Speech fallback).
    */
   public speak(text: string, options: VoiceSynthesizerOptions = {}): Promise<void> {
     return new Promise((resolve) => {
@@ -227,44 +277,74 @@ export class KokoroVoiceSynthesizer {
         return;
       }
 
-      // Interrupt anything in flight, then claim a fresh generation token.
-      this.stopInternal();
+      // Claim a fresh generation token FIRST so any parked loop sees itself
+      // as stale, then tear down its playback and wake it to exit.
       const myToken = ++this.genToken;
       const alive = () => myToken === this.genToken;
+      this.stopInternal();
+      this.wakeAll();
+
+      const worker = this.ensureWorker();
+      if (!worker) {
+        try {
+          options.onError?.(new Error('Web Workers are unavailable in this browser.'));
+        } catch {}
+        resolve();
+        return;
+      }
+      if (this.status !== 'ready') this.status = 'loading';
 
       const speed = Math.max(0.5, Math.min(2.0, options.rate ?? 1.0));
       const volume = options.volume ?? 1.0;
       this.isSpeaking = true;
+      this.pendingChunks = [];
+      this.streamDone = false;
+      this.streamError = null;
       let started = false;
       const finishSpeaking = () => {
         if (!alive()) return;
         this.isSpeaking = false;
       };
 
+      try {
+        worker.postMessage({ type: 'speak', token: myToken, text: cleaned, voice: this.voiceId, speed });
+      } catch (err) {
+        this.isSpeaking = false;
+        try {
+          options.onError?.(err);
+        } catch {}
+        resolve();
+        return;
+      }
+
+      if (!this.ensureAudioContext()) {
+        this.isSpeaking = false;
+        try {
+          options.onError?.(new Error('Web Audio is unavailable in this browser.'));
+        } catch {}
+        resolve();
+        return;
+      }
+
       void (async () => {
         try {
-          const tts = await this.ensureLoaded();
-          if (!alive()) return; // stopped while loading
-          if (!this.ensureAudioContext()) {
-            throw new Error('Web Audio is unavailable in this browser.');
-          }
-          const { TextSplitterStream } = await import('kokoro-js');
-          const splitter = new TextSplitterStream();
-          const stream = tts.stream(splitter, { voice: this.voiceId, speed });
-          splitter.push(cleaned);
-          splitter.close();
-
-          for await (const { audio } of stream) {
-            if (!alive()) return; // interrupted mid-generation: drop chunk
-            if (!started) {
-              started = true;
-              this.isSpeaking = true;
-              try {
-                options.onStart?.();
-              } catch {}
+          for (;;) {
+            if (!alive()) return; // interrupted: drop everything
+            const next = this.pendingChunks.shift();
+            if (next) {
+              if (!started) {
+                started = true;
+                this.isSpeaking = true;
+                try {
+                  options.onStart?.();
+                } catch {}
+              }
+              await this.playChunk(next.pcm, next.sampleRate, volume);
+              continue;
             }
-            await this.playChunk(audio.data as Float32Array, audio.sampling_rate as number, volume);
-            if (!alive()) return;
+            if (this.streamError) throw new Error(String(this.streamError));
+            if (this.streamDone) break;
+            await this.waitForChunk();
           }
 
           finishSpeaking();
@@ -308,10 +388,18 @@ export class KokoroVoiceSynthesizer {
     this.playResolvers.clear();
   }
 
-  /** Instantly stops playback and discards in-flight generation (barge-in). */
+  /** Instantly stops playback, cancels the worker job, drops queued audio. */
   public stop(): void {
     this.genToken++;
+    try {
+      this.worker?.postMessage({ type: 'cancel', token: this.genToken });
+    } catch {}
     this.stopInternal();
+    this.pendingChunks = [];
+    this.streamDone = true;
+    this.streamError = null;
+    // Wake every parked speak() loop so each exits via !alive() and settles.
+    this.wakeAll();
     this.isSpeaking = false;
   }
 
