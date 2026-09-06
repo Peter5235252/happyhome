@@ -14,6 +14,130 @@ const defaultGemini = new GoogleGenAI({
   }
 });
 
+// ---------------------------------------------------------------------------
+// WEBGPU SAFETY CONSTITUTION (STRICT, NON-NEGOTIABLE)
+// Grounded in verified WebGPU data as of Sept 2026:
+// - WGSL spec: https://www.w3.org/TR/WGSL/
+// - WebGPU spec: https://www.w3.org/TR/webgpu/
+// ---------------------------------------------------------------------------
+const WEBGPU_SAFETY_CONSTITUTION = `
+WEBGPU SAFETY CONSTITUTION — STRICT, NON-NEGOTIABLE. VIOLATION = REJECT THE ACTION.
+
+1. WebGPU ONLY. WebGL IS ABSOLUTELY FORBIDDEN.
+   - NEVER emit, suggest, or inject WebGL, GLSL, gl_*, texture2D(), gl_FragColor,
+     precision lowp/mediump/highp, or any <canvas>.getContext('webgl'|'webgl2'|'experimental-webgl').
+   - The ONLY valid graphics API in this app is navigator.gpu + WGSL +
+     GPUComputePipeline/GPURenderPipeline. If a snippet contains WebGL it must be
+     refused and rewritten in WGSL.
+
+2. WGSL MUST BE VALID, GROUNDED, AND VERIFIED.
+   - Ground every shader in the W3C WGSL spec (https://www.w3.org/TR/WGSL/) and the
+     WebGPU spec (https://www.w3.org/TR/webgpu/). Do NOT invent builtins, attributes,
+     or texture formats.
+   - Allowed compute entry: @compute @workgroup_size(8, 8, 1) fn main(@builtin(global_invocation_id) ...).
+     Allowed blit entries: @vertex fn vs_main + @fragment fn fs_main.
+   - Allowed storage format for the raytracer pipeline: texture_storage_2d<rgba16float, write>.
+   - Backticks and \${...} are FORBIDDEN inside raw WGSL payloads (they break the TS
+     template wrapper and caused the production "Unexpected export" Vite failure).
+
+3. RESPECT ADAPTER LIMITS AND TERMINATION.
+   - Query adapter.limits first (maxComputeWorkgroupSizeX/Y, maxComputeInvocationsPerWorkgroup=256,
+     maxBufferSize, maxTextureDimension2D, maxStorageBufferBindingSize).
+   - Total workgroup invocations MUST be <= 256. Our safe default is (8,8,1)=64.
+   - Every loop MUST provably terminate: for-loops with small constant bounds
+     (raymarch <= 110 steps, shadows <= 28, volumetrics <= 8-16, AO <= 5).
+     while(true) without break is FORBIDDEN.
+   - Uncapped raymarching / unbounded volumetrics are FORBIDDEN.
+
+4. CONSEQUENCES ARE SEVERE — TREAT EVERY SHADER AS SAFETY-CRITICAL.
+   - FACT (verified, do not overstate): WebGPU runs in the browser sandbox with
+     validation layers, timeouts, and device-loss handling. A bad WGSL shader
+     CANNOT physically melt or permanently destroy GPU hardware.
+   - FACT (verified, must emphasize): a bad shader CAN and WILL cause real harm:
+     WebGPU device loss, OS driver reset / Timeout Detection & Recovery (TDR),
+     frozen browser tab, full browser crash, lost unsaved user work, hours-long
+     GPU hangs on weak hardware, and corrupted frame output requiring reload.
+   - THEREFORE: always validate with getCompilationInfo() + pushErrorScope('validation')
+     BEFORE presenting output. On any error, ABORT the pipeline swap, keep the last
+     known-good pipeline running, surface the exact Line:col message, and offer a fix.
+     Never retry a failing shader in a hot loop. Never suppress validation errors.
+`;
+
+const FULL_AGENTIC_CHARTER = `
+FULL AGENTIC CONTROL CHARTER:
+You are NOT limited to a predefined set of templates. You have complete agentic
+control over the ENTIRE Happy Home app:
+- 3D scene graph (create / batch / modify / remove / clear objects with any
+  PBR shape: sphere, box, cylinder, capsule, torus, cone, crystal, lantern).
+- Lighting (timeOfDay, godrayIntensity, giIntensity, aoIntensity, reflections),
+  atmosphere (smokeSpeed, windSpeed, cloudDensity, audioEnabled), and camera
+  (any preset + free azimuth/elevation/distance/target/fov).
+- RENDERER SOURCE ITSELF: you may author raw WGSL for the SDF/material hooks
+  (updateSceneShader) and you may recompile the ENTIRE compute+blit rendering
+  pipeline from scratch (compileCustomComputePipeline), then restore the verified
+  built-in pipeline (restoreBuiltInPipeline) at any time.
+- Diagnostics: you may read live GPU state (getSceneDiagnostics) — adapter,
+  limits, shaderStatus, fps, camera, settings — and adapt your plan accordingly.
+Chain as many tool calls as needed in ONE response to realize the user's vision.
+`;
+
+// Server-side WGSL guard (mirrors src/renderer/shaders/wgslSafety.ts).
+function validateCustomWGSLServer(
+  code: unknown,
+  kind: 'snippet' | 'compute' | 'blit'
+): { ok: boolean; errors: string[] } {
+  const errors: string[] = [];
+  if (typeof code !== 'string' || code.length < 16) {
+    return { ok: false, errors: ['WGSL payload is empty or too short.'] };
+  }
+  if (code.length > 320_000) {
+    errors.push(`WGSL payload too large (${code.length} chars).`);
+  }
+  if (code.includes('`') || /\$\{/.test(code)) {
+    errors.push('Backticks or ${...} are forbidden in WGSL payloads.');
+  }
+  const forbidden: Array<[RegExp, string]> = [
+    [/webgl/i, 'WebGL is forbidden (WebGPU-only app).'],
+    [/\bGLSL\b/, 'GLSL is forbidden (WGSL only).'],
+    [/\bgl_\w+/i, 'gl_* builtins are forbidden.'],
+    [/texture2D\s*\(/i, 'texture2D() is GLSL-only.'],
+    [/gl_FragColor/i, 'gl_FragColor is GLSL-only.'],
+    [/precision\s+(lowp|mediump|highp)/i, 'GLSL precision qualifiers are forbidden.'],
+  ];
+  for (const [re, msg] of forbidden) {
+    if (re.test(code)) errors.push(`Forbidden pattern: ${msg}`);
+  }
+  if (kind === 'compute') {
+    for (const m of ['@compute', '@builtin(global_invocation_id)', 'textureStore', 'rgba16float']) {
+      if (!code.includes(m)) errors.push(`Custom compute shader missing required marker: "${m}".`);
+    }
+    const wg = [...code.matchAll(/@workgroup_size\s*\(\s*(\d+)(?:\s*,\s*(\d+))?(?:\s*,\s*(\d+))?\s*\)/g)];
+    for (const m of wg) {
+      const total = parseInt(m[1], 10) * (m[2] ? parseInt(m[2], 10) : 1) * (m[3] ? parseInt(m[3], 10) : 1);
+      if (total > 256) errors.push(`@workgroup_size total ${total} exceeds portable WebGPU max 256. Use (8,8,1).`);
+    }
+    if (/while\s*\(\s*true\s*\)/.test(code) && (code.match(/\bbreak\s*;/g)?.length ?? 0) === 0) {
+      errors.push('Unbounded while(true) without break is forbidden (GPU hang / device loss risk).');
+    }
+  }
+  if (kind === 'blit') {
+    for (const m of ['@vertex', '@fragment']) {
+      if (!code.includes(m)) errors.push(`Custom blit shader missing required marker: "${m}".`);
+    }
+  }
+  return { ok: errors.length === 0, errors };
+}
+
+// Normalize historic / alias model ids to exact provider API ids (verified Sept 2026).
+function resolveApiModelIdServer(uiModelId: string): string {
+  if (!uiModelId) return 'gemini-3.6-flash';
+  if (uiModelId === 'claude-fable-5.1') return 'claude-fable-5-1'; // historic dot-bug
+  if (uiModelId === 'mistral-large-3') return 'mistral-large-latest';
+  if (uiModelId === 'mistral-small-4') return 'mistral-small-latest';
+  if (uiModelId === 'mistral-medium-3.5') return 'mistral-medium-latest';
+  return uiModelId;
+}
+
 const OPENAI_TOOLS = [
   {
     type: "function",
@@ -207,6 +331,75 @@ const OPENAI_TOOLS = [
         }
       }
     }
+  },
+  {
+    type: "function",
+    function: {
+      name: "updateSceneShader",
+      description: "FULL AGENTIC SHADER CONTROL (safe injection): supplies raw WGSL for the scene SDF hook (customSDF, inserted into mapScene) and material hook (customMats, chained else-if on material id). WebGPU/WGSL ONLY — WebGL/GLSL is forbidden and rejected. Loops must terminate; keep snippets under ~48k chars; no backticks or ${}.",
+      parameters: {
+        type: "object",
+        properties: {
+          customSDF: { type: "string", description: "WGSL statements using p: vec3f, mapScene helpers (sdSphere/sdBox/sdRoundBox/sdCylinder/sdCapsule/sdTorus/sdCone/sdOctahedron/smin/opU) and res = opU(res, Hit(d, MAT_IDu, uv)). Example: let d = sdSphere(p - vec3f(0.0,1.0,0.0), 0.4); res = opU(res, Hit(d, 100u, p.xy));" },
+          customMats: { type: "string", description: "WGSL chained branches like: else if (mat == 100u) { m.albedo = vec3f(1.0,0.8,0.3); m.roughness = 0.25; m.metallic = 0.0; m.emission = vec3f(0.0); }" },
+          reason: { type: "string", description: "Short human-readable reason for the shader change." }
+        },
+        required: ["customSDF"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "compileCustomComputePipeline",
+      description: "FULL PIPELINE RECOMPILE FROM SCRATCH: replaces the ENTIRE WebGPU compute shader (and optionally the blit vertex/fragment shader) with AI-authored WGSL. STRICT SAFETY: WebGPU/WGSL only, must include @compute @workgroup_size(8,8,1) + texture_storage_2d<rgba16float,write> + textureStore, bounded loops, adapter limits. Invalid shaders are rejected before touching the GPU to prevent device loss / driver reset / tab crash.",
+      parameters: {
+        type: "object",
+        properties: {
+          computeWGSL: { type: "string", description: "Complete WGSL compute program as plain text (no backticks, no ${}). Must be grounded in https://www.w3.org/TR/WGSL/." },
+          blitWGSL: { type: "string", description: "Optional complete WGSL blit program with @vertex vs_main + @fragment fs_main + ACES tonemap." },
+          reason: { type: "string", description: "Why a full recompile is needed instead of updateSceneShader." }
+        },
+        required: ["computeWGSL"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "restoreBuiltInPipeline",
+      description: "Restores the verified built-in Happy Home raytracer pipeline after agentic shader experiments. Call this whenever a custom shader fails validation or the user asks to reset rendering.",
+      parameters: { type: "object", properties: {} }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "setRenderPipelineSettings",
+      description: "Full-app render control beyond lighting: resolution scale, debug layer, godrays/GI/AO toggles and intensities, reflections, camera preset. Use for performance vs quality tradeoffs and layer isolation.",
+      parameters: {
+        type: "object",
+        properties: {
+          resolutionScale: { type: "number", description: "0.5, 0.75, or 1.0. Lower this FIRST on weak GPUs before touching shaders." },
+          debugMode: { type: "number", description: "0=beauty, 1=normals, 2=GI, 3=godrays, 4=AO, 5=shadow, 6=complexity heatmap." },
+          godraysEnabled: { type: "boolean" },
+          giEnabled: { type: "boolean" },
+          godrayIntensity: { type: "number" },
+          giIntensity: { type: "number" },
+          aoIntensity: { type: "number" },
+          reflectionsEnabled: { type: "boolean" },
+          cameraPreset: { type: "string", description: "svg_perspective, cinematic, meadow, sunset, aerial, dramatic_low, close_up" }
+        }
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "getSceneDiagnostics",
+      description: "Reads live full-app state for grounded decisions: GPU adapter, limits, shaderStatus, fps, camera, settings, dynamicObjects, resolution. Call this before authoring custom WGSL so workgroup sizes and dispatch fit the actual device.",
+      parameters: { type: "object", properties: {} }
+    }
   }
 ];
 
@@ -336,6 +529,60 @@ const GEMINI_FUNCTION_DECLARATIONS = [
         fov: { type: Type.NUMBER }
       }
     }
+  },
+  {
+    name: "updateSceneShader",
+    description: "FULL AGENTIC SHADER CONTROL (safe injection): raw WGSL for SDF hook + material hook. WebGPU/WGSL ONLY — WebGL/GLSL forbidden. Bounded loops only; no backticks or ${}.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        customSDF: { type: Type.STRING, description: "WGSL using sdSphere/sdBox/etc + res = opU(res, Hit(d, MAT_IDu, uv))." },
+        customMats: { type: Type.STRING, description: "Chained else-if branches on mat id setting albedo/roughness/metallic/emission." },
+        reason: { type: Type.STRING }
+      },
+      required: ["customSDF"]
+    }
+  },
+  {
+    name: "compileCustomComputePipeline",
+    description: "FULL PIPELINE RECOMPILE FROM SCRATCH with AI-authored WGSL. STRICT: WebGPU/WGSL only, @compute @workgroup_size(8,8,1), rgba16float, bounded loops. Invalid = rejected before GPU touch.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        computeWGSL: { type: Type.STRING, description: "Complete WGSL compute program, grounded in https://www.w3.org/TR/WGSL/." },
+        blitWGSL: { type: Type.STRING },
+        reason: { type: Type.STRING }
+      },
+      required: ["computeWGSL"]
+    }
+  },
+  {
+    name: "restoreBuiltInPipeline",
+    description: "Restores the verified built-in raytracer pipeline after custom shader experiments.",
+    parameters: { type: Type.OBJECT, properties: {} }
+  },
+  {
+    name: "setRenderPipelineSettings",
+    description: "Full-app render control: resolutionScale, debugMode, godrays/GI/AO toggles and intensities, reflections, cameraPreset.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        resolutionScale: { type: Type.NUMBER },
+        debugMode: { type: Type.NUMBER },
+        godraysEnabled: { type: Type.BOOLEAN },
+        giEnabled: { type: Type.BOOLEAN },
+        godrayIntensity: { type: Type.NUMBER },
+        giIntensity: { type: Type.NUMBER },
+        aoIntensity: { type: Type.NUMBER },
+        reflectionsEnabled: { type: Type.BOOLEAN },
+        cameraPreset: { type: Type.STRING }
+      }
+    }
+  },
+  {
+    name: "getSceneDiagnostics",
+    description: "Reads live full-app GPU state (adapter, limits, shaderStatus, fps, camera, settings) before authoring WGSL.",
+    parameters: { type: Type.OBJECT, properties: {} }
   }
 ];
 
@@ -354,7 +601,7 @@ ${(context.memory.facts || []).map((f: string) => `  • ${f}`).join('\n') || " 
     : '';
 
   return `You are the creative, highly capable, and spontaneous AI 3D Director & Voice Companion for "Happy Home" — a live photorealistic WebGPU raytracer.
-You have full creative agency to sculpt the world, place and shape objects, paint lighting and atmosphere, choreograph camera perspectives, and converse with the user.
+${FULL_AGENTIC_CHARTER}
 
 3D SCENE COORDINATES & GEOMETRY:
 - The cottage is centered around [0, 0, 0]. Front porch & door are at [0, 0.4, 1.8].
@@ -369,16 +616,22 @@ CURRENT 3D SCENE STATE:
 - Volumetric Godrays: ${context?.settings?.godrayIntensity ?? 1.2}x
 - Global Illumination: ${context?.settings?.giIntensity ?? 1.0}x
 - Camera: Preset "${context?.settings?.cameraPreset ?? 'svg_perspective'}"
+- GPU Diagnostics: ${context?.diagnostics ? JSON.stringify(context.diagnostics).slice(0, 800) : 'not yet reported — call getSceneDiagnostics before authoring WGSL'}
 ${memorySection}
 
+${WEBGPU_SAFETY_CONSTITUTION}
+
 CORE AGENTIC BEHAVIORS:
-1. CHAIN ACTIONS FREELY: You can call multiple tools in a single response! For instance, when requested to make an evening scene, seamlessly chain 'setLighting', 'batchCreateObjects' (for glowing lanterns along the walkway), and 'setCamera' for a cinematic angle.
-2. NATURAL & CONVERSATIONAL VOICE: ALWAYS provide a warm, genuine, conversational spoken response in natural English. Explain what you created or adjusted, share your creative thinking, and invite the user into the creative flow.
-3. NEVER USE ROBOTIC FALLBACK TEMPLATES: Avoid repetitive phrases like "I have placed that object for you" or "Ready for your next command". Speak with authentic personality, enthusiasm, and style.
-4. SPOKEN AUDIO RULES: Your speech will be read aloud. Keep it concise (1 to 3 natural sentences). Do not use markdown symbols (*, #, \`, bullets, emojis) in the spoken text.`;
+1. CHAIN ACTIONS FREELY: You can call multiple tools in a single response! For instance, when requested to make an evening scene, seamlessly chain 'setLighting', 'batchCreateObjects' (for glowing lanterns along the walkway), and 'setCamera' for a cinematic angle. For deep visual rewrites, chain getSceneDiagnostics -> updateSceneShader or compileCustomComputePipeline -> setRenderPipelineSettings.
+2. PREFER SAFE INCREMENTAL SHADERS: use createObject/batchCreateObjects + updateSceneShader first. Only use compileCustomComputePipeline when the user explicitly asks for a new look that hooks cannot express, and ALWAYS call getSceneDiagnostics first so workgroup sizes fit the real device.
+3. NATURAL & CONVERSATIONAL VOICE: ALWAYS provide a warm, genuine, conversational spoken response in natural English. Explain what you created or adjusted, share your creative thinking, and invite the user into the creative flow.
+4. NEVER USE ROBOTIC FALLBACK TEMPLATES: Avoid repetitive phrases like "I have placed that object for you" or "Ready for your next command". Speak with authentic personality, enthusiasm, and style.
+5. SPOKEN AUDIO RULES: Your speech will be read aloud. Keep it concise (1 to 3 natural sentences). Do not use markdown symbols (*, #, \`, bullets, emojis) in the spoken text.
+6. ON SHADER REJECTION: if the system reports a WGSL validation error, explain it in plain language in your NEXT spoken turn, keep the last good pipeline running, and offer a corrected retry — never silently retry in a loop.`;
 }
 
 async function handleGeminiCall(model: string, apiKey: string | undefined, message: string, context: any, history: any[] = []) {
+  const apiModel = resolveApiModelIdServer(model || "gemini-3.6-flash");
   const genAI = apiKey ? new GoogleGenAI({ apiKey }) : defaultGemini;
   
   const contents = [
@@ -393,7 +646,7 @@ async function handleGeminiCall(model: string, apiKey: string | undefined, messa
   ];
 
   const response = await genAI.models.generateContent({
-    model: model || "gemini-3.6-flash",
+    model: apiModel,
     contents,
     config: {
       systemInstruction: buildSystemPrompt(context),
@@ -428,7 +681,7 @@ async function handleGeminiCall(model: string, apiKey: string | undefined, messa
   if (!speechText.trim() && functionCalls.length > 0) {
     try {
       const summaryRes = await genAI.models.generateContent({
-        model: model || "gemini-3.6-flash",
+        model: apiModel,
         contents: [
           {
             role: "user",
@@ -458,6 +711,7 @@ async function handleOpenAICompatibleCall(
   context: any,
   history: any[] = []
 ) {
+  const apiModel = resolveApiModelIdServer(model);
   const messages = [
     { role: "system", content: buildSystemPrompt(context) },
     ...(history || []).slice(-6).map((h: any) => ({ role: h.role, content: h.content })),
@@ -471,7 +725,7 @@ async function handleOpenAICompatibleCall(
       "Content-Type": "application/json"
     },
     body: JSON.stringify({
-      model,
+      model: apiModel,
       messages,
       tools: OPENAI_TOOLS,
       temperature: 0.75
@@ -513,7 +767,7 @@ async function handleOpenAICompatibleCall(
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
-          model,
+          model: apiModel,
           messages: [
             { role: "system", content: buildSystemPrompt(context) },
             { role: "user", content: `You just executed these actions for the user's prompt "${message}": ${JSON.stringify(functionCalls)}. In 1-2 natural spoken sentences, tell the user what you crafted or modified.` }
@@ -532,6 +786,7 @@ async function handleOpenAICompatibleCall(
 }
 
 async function handleClaudeCall(model: string, key: string, message: string, context: any, history: any[] = []) {
+  const apiModel = resolveApiModelIdServer(model);
   const messages = [
     ...(history || []).slice(-6).map((h: any) => ({ role: h.role, content: h.content })),
     { role: "user", content: message }
@@ -545,7 +800,7 @@ async function handleClaudeCall(model: string, key: string, message: string, con
       "content-type": "application/json"
     },
     body: JSON.stringify({
-      model,
+      model: apiModel,
       max_tokens: 1024,
       system: buildSystemPrompt(context),
       messages,
@@ -593,9 +848,15 @@ async function startServer() {
   // Agentic Multi-Model Voice Endpoint
   app.post("/api/voice-agent", async (req, res) => {
     try {
-      const { message, model = "gemini-3.6-flash", apiKey, context, history = [] } = req.body;
+      const { message, model: rawModel = "gemini-3.6-flash", apiKey, context, history = [] } = req.body;
       if (!message) {
         return res.status(400).json({ error: "Message is required" });
+      }
+
+      // Normalize historic / alias ids to exact provider API ids (verified Sept 2026).
+      const model = resolveApiModelIdServer(rawModel);
+      if (model !== rawModel) {
+        console.log(`Voice Agent model normalized: ${rawModel} -> ${model}`);
       }
 
       console.log(`Voice Agent [Model: ${model}] prompt:`, message);
@@ -648,6 +909,40 @@ async function startServer() {
 
       let { speechText, functionCalls } = result;
 
+      // SERVER-SIDE WGSL SAFETY GATE: validate any shader payloads the LLM
+      // produced BEFORE the client ever compiles them. Rejected payloads are
+      // stripped so a bad shader can never reach the GPU (prevents device loss).
+      const safeCalls: any[] = [];
+      const rejectionNotes: string[] = [];
+      for (const call of functionCalls || []) {
+        if (call?.name === 'updateSceneShader') {
+          const sdfCheck = validateCustomWGSLServer(call.args?.customSDF ?? '', 'snippet');
+          const matCheck = validateCustomWGSLServer(call.args?.customMats ?? 'else if (mat == 100u) {}', 'snippet');
+          if (!sdfCheck.ok || !matCheck.ok) {
+            rejectionNotes.push(`updateSceneShader rejected: ${[...sdfCheck.errors, ...matCheck.errors].join('; ')}`);
+            continue;
+          }
+          safeCalls.push(call);
+        } else if (call?.name === 'compileCustomComputePipeline') {
+          const compCheck = validateCustomWGSLServer(call.args?.computeWGSL ?? '', 'compute');
+          const blitCheck = call.args?.blitWGSL
+            ? validateCustomWGSLServer(call.args.blitWGSL, 'blit')
+            : { ok: true, errors: [] as string[] };
+          if (!compCheck.ok || !blitCheck.ok) {
+            rejectionNotes.push(`compileCustomComputePipeline rejected: ${[...compCheck.errors, ...blitCheck.errors].join('; ')}`);
+            continue;
+          }
+          safeCalls.push(call);
+        } else {
+          safeCalls.push(call);
+        }
+      }
+      functionCalls = safeCalls;
+      if (rejectionNotes.length > 0) {
+        console.warn('WGSL safety gate rejections:', rejectionNotes);
+        speechText = `${speechText} Note: I blocked an unsafe shader update (${rejectionNotes[0].slice(0, 160)}). The last good visuals are still running.`.trim();
+      }
+
       // Clean speech text
       speechText = (speechText || "")
         .replace(/[*#`_]/g, '')
@@ -673,7 +968,7 @@ async function startServer() {
 
   // Cross-Session Memory Summarizer Endpoint
   app.post("/api/summarize-session", async (req, res) => {
-    const { history = [], currentMemory = null, model = "gemini-3.6-flash", apiKey } = req.body || {};
+    const { history = [], currentMemory = null, model: rawSummaryModel = "gemini-3.6-flash", apiKey } = req.body || {};
     try {
       if (!history || history.length === 0) {
         return res.json({ 
@@ -712,7 +1007,8 @@ OUTPUT FORMAT: Strict JSON only.
   ]
 }`;
 
-      const summaryModel = model.startsWith("gemini-") ? model : "gemini-3.6-flash";
+      const summaryModelRaw = resolveApiModelIdServer(rawSummaryModel);
+      const summaryModel = summaryModelRaw.startsWith("gemini-") ? summaryModelRaw : "gemini-3.6-flash";
       const response = await genAI.models.generateContent({
         model: summaryModel,
         contents: [{ role: "user", parts: [{ text: prompt }] }],

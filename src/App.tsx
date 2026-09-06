@@ -11,7 +11,7 @@ import { SpeechToTextEngine } from './audio/SpeechToTextEngine';
 import { naturalVoice } from './audio/NaturalVoiceSynthesizer';
 import { VoiceAssistantPill } from './components/VoiceAssistantPill';
 import { MemoryManagerModal } from './components/MemoryManagerModal';
-import { SUPPORTED_MODELS } from './constants/models';
+import { SUPPORTED_MODELS, normalizeModelId, resolveApiModelId } from './constants/models';
 import { 
   fetchUserMemoryProfile, 
   saveUserMemoryProfile, 
@@ -71,7 +71,7 @@ export default function App() {
   const [conversationHistory, setConversationHistory] = useState<Array<{ role: 'user' | 'assistant'; content: string }>>([]);
 
   const [selectedModel, setSelectedModel] = useState<string>(() => {
-    return localStorage.getItem('voice_assistant_model') || 'gemini-3.6-flash';
+    return normalizeModelId(localStorage.getItem('voice_assistant_model'));
   });
   const [micError, setMicError] = useState<string | null>(null);
   const [isRequestingMic, setIsRequestingMic] = useState<boolean>(false);
@@ -86,8 +86,9 @@ export default function App() {
   });
 
   const handleSelectModel = useCallback((modelId: string) => {
-    setSelectedModel(modelId);
-    localStorage.setItem('voice_assistant_model', modelId);
+    const normalized = normalizeModelId(modelId);
+    setSelectedModel(normalized);
+    localStorage.setItem('voice_assistant_model', normalized);
   }, []);
 
   const handleUpdateApiKey = useCallback((providerId: string, key: string) => {
@@ -152,7 +153,7 @@ export default function App() {
   const summarizeAndSaveSession = useCallback(async (historyToSummarize: Array<{ role: string; content: string }>) => {
     if (!historyToSummarize || historyToSummarize.length === 0) return;
     try {
-      const modelInfo = SUPPORTED_MODELS.find(m => m.id === selectedModel);
+      const modelInfo = SUPPORTED_MODELS.find(m => m.id === selectedModel || m.apiModelId === selectedModel);
       const providerId = modelInfo?.providerId || 'gemini';
       const apiKey = apiKeys[providerId] || undefined;
 
@@ -162,7 +163,7 @@ export default function App() {
         body: JSON.stringify({
           history: historyToSummarize,
           currentMemory: userMemory,
-          model: selectedModel,
+          model: resolveApiModelId(selectedModel),
           apiKey
         })
       });
@@ -213,9 +214,10 @@ export default function App() {
     setTranscript(userPrompt);
 
     try {
-      const modelInfo = SUPPORTED_MODELS.find(m => m.id === selectedModel);
+      const modelInfo = SUPPORTED_MODELS.find(m => m.id === selectedModel || m.apiModelId === selectedModel);
       const providerId = modelInfo?.providerId || 'gemini';
       const apiKey = apiKeys[providerId] || undefined;
+      const apiModelId = resolveApiModelId(selectedModel);
 
       const res = await fetch('/api/voice-agent', {
         method: 'POST',
@@ -223,13 +225,14 @@ export default function App() {
         signal: abortController.signal,
         body: JSON.stringify({
           message: userPrompt,
-          model: selectedModel,
+          model: apiModelId,
           apiKey,
           history: conversationHistory,
           context: {
             dynamicObjects,
             dynamicObjectsCount: dynamicObjects.length,
             memory: userMemory,
+            diagnostics: rendererRef.current?.getDiagnosticsSnapshot?.() || stats.diagnostics,
             settings: {
               timeOfDay: settings.timeOfDay,
               godrayIntensity: settings.godrayIntensity,
@@ -238,6 +241,9 @@ export default function App() {
               godraysEnabled: settings.godraysEnabled,
               giEnabled: settings.giEnabled,
               cameraPreset: settings.cameraPreset,
+              resolutionScale: settings.resolutionScale,
+              debugMode: settings.debugMode,
+              reflectionsEnabled: settings.reflectionsEnabled,
             }
           }
         })
@@ -322,6 +328,71 @@ export default function App() {
               rendererRef.current.setCamera(args);
             }
             setLastAction(`Choreographed camera view`);
+          } else if (call.name === 'updateSceneShader') {
+            // FULL AGENTIC SHADER CONTROL — validated client-side before GPU touch.
+            try {
+              if (rendererRef.current?.setCustomSceneShader) {
+                await rendererRef.current.setCustomSceneShader(
+                  call.args?.customSDF || '',
+                  call.args?.customMats || ''
+                );
+                setLastAction(`Recompiled scene shader${call.args?.reason ? `: ${call.args.reason}` : ''}`);
+              }
+            } catch (e: any) {
+              console.error('Custom scene shader rejected:', e);
+              setLastAction(`Shader update blocked: ${(e?.message || 'validation failed').slice(0, 120)}`);
+            }
+          } else if (call.name === 'compileCustomComputePipeline') {
+            // FULL PIPELINE RECOMPILE FROM SCRATCH — strict WebGPU-only validation.
+            try {
+              if (rendererRef.current?.compileFullCustomPipeline) {
+                await rendererRef.current.compileFullCustomPipeline(
+                  call.args?.computeWGSL,
+                  call.args?.blitWGSL
+                );
+                setLastAction(`Recompiled full WebGPU pipeline${call.args?.reason ? `: ${call.args.reason}` : ''}`);
+              }
+            } catch (e: any) {
+              console.error('Custom pipeline rejected:', e);
+              setLastAction(`Pipeline recompile blocked: ${(e?.message || 'validation failed').slice(0, 140)}`);
+            }
+          } else if (call.name === 'restoreBuiltInPipeline') {
+            try {
+              await rendererRef.current?.restoreBuiltInPipeline?.();
+              setLastAction('Restored built-in raytracer pipeline');
+            } catch (e) {
+              console.error('Restore pipeline failed:', e);
+            }
+          } else if (call.name === 'setRenderPipelineSettings') {
+            const {
+              resolutionScale, debugMode, godraysEnabled, giEnabled,
+              godrayIntensity, giIntensity, aoIntensity,
+              reflectionsEnabled, cameraPreset,
+            } = call.args || {};
+            setSettings(prev => ({
+              ...prev,
+              ...(resolutionScale !== undefined ? { resolutionScale } : {}),
+              ...(debugMode !== undefined ? { debugMode } : {}),
+              ...(godraysEnabled !== undefined ? { godraysEnabled: !!godraysEnabled } : {}),
+              ...(giEnabled !== undefined ? { giEnabled: !!giEnabled } : {}),
+              ...(godrayIntensity !== undefined ? { godrayIntensity } : {}),
+              ...(giIntensity !== undefined ? { giIntensity } : {}),
+              ...(aoIntensity !== undefined ? { aoIntensity } : {}),
+              ...(reflectionsEnabled !== undefined ? { reflectionsEnabled: !!reflectionsEnabled } : {}),
+              ...(cameraPreset !== undefined ? { cameraPreset } : {}),
+            }));
+            if (rendererRef.current) {
+              if (resolutionScale !== undefined) {
+                rendererRef.current.settings.resolutionScale = resolutionScale;
+              }
+              if (cameraPreset) {
+                rendererRef.current.setPreset(cameraPreset);
+              }
+            }
+            setLastAction('Updated full render pipeline settings');
+          } else if (call.name === 'getSceneDiagnostics') {
+            // Observability only — snapshot was already sent as context; refresh UI stats.
+            setLastAction('Inspected live GPU diagnostics');
           }
         }
       }

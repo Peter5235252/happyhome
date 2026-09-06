@@ -4,7 +4,8 @@
  * Includes comprehensive WebGPU debugging, error scope capture, and diagnostics.
  */
 
-import { getComputeShaderWGSL, BLIT_SHADER_WGSL } from './shaders/raytracer.compute.wgsl';
+import { getComputeShaderWGSL, BLIT_SHADER_WGSL } from './shaders/raytracer.compute.wgsl.ts';
+import { sanitizeInjectedWGSL, validateFullWGSL } from './shaders/wgslSafety.ts';
 import { CameraState, PerformanceStats, RenderSettings, WebGPUDiagnostics } from './types';
 
 export class WebGPURenderer {
@@ -472,11 +473,28 @@ export class WebGPURenderer {
     });
 
     try {
-      const code = getComputeShaderWGSL(dynamicSDF, dynamicMats);
+      // Sanitize AI-derived snippets BEFORE interpolation. This prevents a
+      // single backtick / ${...} from unterminating the TS template literal
+      // in raytracer.compute.wgsl.ts — the exact failure that produced
+      // "vite:esbuild Unexpected export at 1220:0" on the /app/applet deploy
+      // when a corrupted/duplicated file broke the transform.
+      const safeSDF = sanitizeInjectedWGSL(dynamicSDF, 'dynamicSDF');
+      const safeMats = sanitizeInjectedWGSL(dynamicMats, 'dynamicMats');
+      const code = getComputeShaderWGSL(safeSDF, safeMats);
       const computeModule = this.device.createShaderModule({
         label: 'HappyHomeDynamicComputeShader',
         code,
       });
+
+      const compilationInfo = await computeModule.getCompilationInfo();
+      const shaderErrors = compilationInfo.messages.filter((m) => m.type === 'error');
+      if (shaderErrors.length > 0) {
+        const details = shaderErrors.map((e) => `Line ${e.lineNum}:${e.linePos} - ${e.message}`).join('\n');
+        console.error(`Dynamic WGSL recompilation rejected:\n${details}`);
+        this.diagnostics.shaderStatus = 'error';
+        this.diagnostics.shaderErrors = shaderErrors.map((e) => `Line ${e.lineNum}:${e.linePos} - ${e.message}`);
+        return;
+      }
 
       const computePipelineLayout = this.device.createPipelineLayout({
         bindGroupLayouts: [this.computeBindGroupLayout],
@@ -491,10 +509,180 @@ export class WebGPURenderer {
         },
       });
 
+      this.diagnostics.shaderStatus = 'ok';
       this.sampleIndex = 0;
     } catch (err) {
       console.error("Failed to recompile compute shader with dynamic objects:", err);
     }
+  }
+
+  /**
+   * FULL AGENTIC CONTROL — custom scene shader injection.
+   * The AI director may supply raw WGSL for the SDF + material hooks.
+   * Strictly WebGPU/WGSL-only; WebGL/GLSL is rejected before compilation.
+   */
+  public async setCustomSceneShader(customSDF: string, customMats: string): Promise<void> {
+    if (!this.device || !this.computeBindGroupLayout) {
+      throw new Error('Renderer not initialized.');
+    }
+    const safeSDF = sanitizeInjectedWGSL(customSDF || '', 'customSDF');
+    const safeMats = sanitizeInjectedWGSL(customMats || '', 'customMats');
+    const code = getComputeShaderWGSL(safeSDF, safeMats);
+
+    const computeModule = this.device.createShaderModule({
+      label: 'HappyHomeAgenticCustomShader',
+      code,
+    });
+    const info = await computeModule.getCompilationInfo();
+    const errors = info.messages.filter((m) => m.type === 'error');
+    if (errors.length > 0) {
+      const details = errors.map((e) => `Line ${e.lineNum}:${e.linePos} - ${e.message}`).join('\n');
+      this.diagnostics.shaderStatus = 'error';
+      this.diagnostics.shaderErrors = errors.map((e) => `Line ${e.lineNum}:${e.linePos} - ${e.message}`);
+      throw new Error(`Custom WGSL rejected by WebGPU compiler:\n${details}`);
+    }
+    const layout = this.device.createPipelineLayout({
+      bindGroupLayouts: [this.computeBindGroupLayout],
+    });
+    this.computePipeline = this.device.createComputePipeline({
+      label: 'AgenticCustomRaytracerPipeline',
+      layout,
+      compute: { module: computeModule, entryPoint: 'main' },
+    });
+    this.diagnostics.shaderStatus = 'ok';
+    this.diagnostics.shaderErrors = [];
+    this.sampleIndex = 0;
+  }
+
+  /**
+   * FULL AGENTIC CONTROL — recompile the ENTIRE rendering pipeline from
+   * scratch with AI-authored WGSL (compute + blit). The AI must ground every
+   * construct in verified WebGPU/WGSL docs (W3C WGSL + WebGPU specs).
+   * WebGL is never accepted. Validation runs BEFORE pipeline creation so a
+   * bad shader can never hang the GPU: worst case is a clean rejection, not
+   * device loss.
+   */
+  public async compileFullCustomPipeline(computeWGSL: string, blitWGSL?: string): Promise<void> {
+    if (!this.device || !this.computeBindGroupLayout || !this.blitBindGroupLayout || !this.context) {
+      throw new Error('Renderer not initialized.');
+    }
+    const computeCheck = validateFullWGSL(computeWGSL, 'compute');
+    if (!computeCheck.ok) {
+      this.diagnostics.shaderStatus = 'error';
+      this.diagnostics.shaderErrors = computeCheck.errors;
+      throw new Error(`Custom compute pipeline rejected:\n${computeCheck.errors.join('\n')}`);
+    }
+    if (blitWGSL) {
+      const blitCheck = validateFullWGSL(blitWGSL, 'blit');
+      if (!blitCheck.ok) {
+        this.diagnostics.shaderStatus = 'error';
+        this.diagnostics.shaderErrors = blitCheck.errors;
+        throw new Error(`Custom blit pipeline rejected:\n${blitCheck.errors.join('\n')}`);
+      }
+    }
+    for (const w of [...computeCheck.errors, ...computeCheck.warnings]) {
+      console.warn('[WGSL safety]', w);
+    }
+
+    this.device.pushErrorScope('validation');
+    const computeModule = this.device.createShaderModule({
+      label: 'HappyHomeFullCustomCompute',
+      code: computeWGSL,
+    });
+    const computeInfo = await computeModule.getCompilationInfo();
+    const computeErrors = computeInfo.messages.filter((m) => m.type === 'error');
+    if (computeErrors.length > 0) {
+      const details = computeErrors.map((e) => `Line ${e.lineNum}:${e.linePos} - ${e.message}`).join('\n');
+      await this.device.popErrorScope();
+      this.diagnostics.shaderStatus = 'error';
+      this.diagnostics.shaderErrors = computeErrors.map((e) => `Line ${e.lineNum}:${e.linePos} - ${e.message}`);
+      throw new Error(`Custom compute WGSL failed WebGPU compilation:\n${details}`);
+    }
+
+    const computeLayout = this.device.createPipelineLayout({
+      bindGroupLayouts: [this.computeBindGroupLayout],
+    });
+    this.computePipeline = this.device.createComputePipeline({
+      label: 'FullCustomComputePipeline',
+      layout: computeLayout,
+      compute: { module: computeModule, entryPoint: 'main' },
+    });
+
+    if (blitWGSL) {
+      const blitModule = this.device.createShaderModule({
+        label: 'HappyHomeFullCustomBlit',
+        code: blitWGSL,
+      });
+      const blitInfo = await blitModule.getCompilationInfo();
+      const blitErrors = blitInfo.messages.filter((m) => m.type === 'error');
+      if (blitErrors.length > 0) {
+        const details = blitErrors.map((e) => `Line ${e.lineNum}:${e.linePos} - ${e.message}`).join('\n');
+        await this.device.popErrorScope();
+        this.diagnostics.shaderStatus = 'error';
+        this.diagnostics.shaderErrors = blitErrors.map((e) => `Line ${e.lineNum}:${e.linePos} - ${e.message}`);
+        throw new Error(`Custom blit WGSL failed WebGPU compilation:\n${details}`);
+      }
+      const canvasFormat = navigator.gpu.getPreferredCanvasFormat();
+      const blitLayout = this.device.createPipelineLayout({
+        bindGroupLayouts: [this.blitBindGroupLayout],
+      });
+      this.blitPipeline = this.device.createRenderPipeline({
+        label: 'FullCustomBlitPipeline',
+        layout: blitLayout,
+        vertex: { module: blitModule, entryPoint: 'vs_main' },
+        fragment: { module: blitModule, entryPoint: 'fs_main', targets: [{ format: canvasFormat }] },
+        primitive: { topology: 'triangle-list' },
+      });
+    }
+
+    const scopeError = await this.device.popErrorScope();
+    if (scopeError) {
+      this.diagnostics.validationErrors.push(scopeError.message);
+      throw new Error(`WebGPU validation rejected custom pipeline: ${scopeError.message}`);
+    }
+    this.diagnostics.shaderStatus = 'ok';
+    this.diagnostics.shaderErrors = [];
+    this.updateBindGroups();
+    this.sampleIndex = 0;
+  }
+
+  /** Restore the verified built-in raytracer after agentic experiments. */
+  public async restoreBuiltInPipeline(): Promise<void> {
+    if (!this.device || !this.computeBindGroupLayout) return;
+    const code = getComputeShaderWGSL('', '');
+    const computeModule = this.device.createShaderModule({
+      label: 'HappyHomeComputeShader',
+      code,
+    });
+    const layout = this.device.createPipelineLayout({
+      bindGroupLayouts: [this.computeBindGroupLayout],
+    });
+    this.computePipeline = this.device.createComputePipeline({
+      label: 'ComputeRaytracerPipeline',
+      layout,
+      compute: { module: computeModule, entryPoint: 'main' },
+    });
+    this.diagnostics.shaderStatus = 'ok';
+    this.diagnostics.shaderErrors = [];
+    this.sampleIndex = 0;
+  }
+
+  /** Snapshot of live GPU state for the AI director (full app observability). */
+  public getDiagnosticsSnapshot() {
+    return {
+      adapterName: this.diagnostics.adapterName,
+      vendor: this.diagnostics.vendor,
+      architecture: this.diagnostics.architecture,
+      limits: { ...this.diagnostics.limits },
+      shaderStatus: this.diagnostics.shaderStatus,
+      shaderErrors: [...this.diagnostics.shaderErrors],
+      validationErrors: [...this.diagnostics.validationErrors],
+      camera: { ...this.camera, target: [...this.camera.target] as [number, number, number] },
+      settings: { ...this.settings },
+      dynamicObjects: [...this.dynamicObjects],
+      resolution: [this.canvas.width, this.canvas.height] as [number, number],
+      sampleIndex: this.sampleIndex,
+    };
   }
 
   private applyPreset(preset: 'svg_perspective' | 'cinematic' | 'meadow' | 'sunset' | 'aerial' | 'dramatic_low' | 'close_up' | string) {
