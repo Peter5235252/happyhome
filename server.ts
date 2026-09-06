@@ -703,7 +703,169 @@ async function handleGeminiCall(model: string, apiKey: string | undefined, messa
   return { speechText: speechText.trim(), functionCalls };
 }
 
-async function handleOpenAICompatibleCall(
+// ---------------------------------------------------------------------------
+// OpenAI payload rules (verified against official docs, Sept 2026):
+// - https://developers.openai.com/api/docs/guides/reasoning
+// - https://developers.openai.com/api/docs/guides/migrate-to-responses
+// - https://developers.openai.com/api/docs/guides/latest-model
+// - https://learn.microsoft.com/en-us/azure/foundry/openai/how-to/reasoning
+//
+// gpt-5.6 (luna/terra/sol) are reasoning models defaulting to `medium` effort.
+// On /v1/chat/completions ANY request carrying function `tools` fails — even
+// with no explicit reasoning_effort — unless `reasoning_effort` is "none":
+//   400 Function tools with reasoning_effort are not supported for
+//   gpt-5.6-luna in /v1/chat/completions. To use function tools, use
+//   /v1/responses or set reasoning_effort to 'none'.
+// gpt-6-astra is stricter: `none` itself 400s, and Chat Completions does not
+// support function calling with it at all — tool calls MUST use /v1/responses.
+// Reasoning models also reject `temperature`/`top_p` on Chat Completions.
+// Third-party OpenAI-compatible endpoints (xAI, Mistral) are unaffected.
+// ---------------------------------------------------------------------------
+export function isFirstPartyOpenAI(endpointUrl: string): boolean {
+  return endpointUrl.includes('api.openai.com');
+}
+
+export function isOpenAIReasoningModel(apiModel: string): boolean {
+  return /^gpt-(5|6|o)/.test(apiModel);
+}
+
+/** gpt-6+ cannot do function tools on Chat Completions at all → /v1/responses. */
+export function openAIToolsNeedResponses(apiModel: string): boolean {
+  return /^gpt-6/.test(apiModel);
+}
+
+function openAIAuthHeaders(key: string): Record<string, string> {
+  return {
+    'Authorization': `Bearer ${key}`,
+    'Content-Type': 'application/json',
+  };
+}
+
+/** Chat Completions body. Pure (exported for tests). */
+export function buildChatCompletionsBody(
+  endpointUrl: string,
+  apiModel: string,
+  messages: any[],
+  withTools: boolean
+): Record<string, any> {
+  const body: Record<string, any> = { model: apiModel, messages };
+  if (withTools) {
+    body.tools = OPENAI_TOOLS;
+    if (isFirstPartyOpenAI(endpointUrl) && isOpenAIReasoningModel(apiModel)) {
+      // Documented workaround: tools without reasoning on Chat Completions.
+      body.reasoning_effort = 'none';
+    } else {
+      body.temperature = 0.75;
+    }
+  } else if (!(isFirstPartyOpenAI(endpointUrl) && isOpenAIReasoningModel(apiModel))) {
+    body.temperature = 0.75;
+  }
+  return body;
+}
+
+/** Convert Chat Completions function tools to Responses API function tools. */
+export function toResponsesTools(openaiTools: any[]): any[] {
+  return (openaiTools || []).map((t) => ({
+    type: 'function',
+    name: t.function.name,
+    description: t.function.description,
+    parameters: t.function.parameters,
+    strict: false,
+  }));
+}
+
+/** Responses API body. Pure (exported for tests). */
+export function buildResponsesBody(apiModel: string, messages: any[], withTools: boolean): Record<string, any> {
+  const body: Record<string, any> = {
+    model: apiModel,
+    input: messages,
+    store: false,
+  };
+  if (withTools) {
+    body.tools = toResponsesTools(OPENAI_TOOLS);
+    // gpt-6-astra has no `none` level; medium is the documented default balance.
+    body.reasoning = { effort: 'medium' };
+  }
+  return body;
+}
+
+/** Parse a /v1/responses payload into { speechText, functionCalls }. Pure. */
+export function parseResponsesOutput(data: any): { speechText: string; functionCalls: any[] } {
+  let speechText = '';
+  const functionCalls: any[] = [];
+  for (const item of data?.output || []) {
+    if (item?.type === 'message') {
+      for (const c of item.content || []) {
+        if ((c?.type === 'output_text') && typeof c.text === 'string') speechText += c.text + ' ';
+      }
+    } else if (item?.type === 'function_call' && item.name) {
+      try {
+        functionCalls.push({
+          name: item.name,
+          args: typeof item.arguments === 'string' ? JSON.parse(item.arguments || '{}') : (item.arguments || {}),
+        });
+      } catch (e) {
+        console.warn('Failed to parse Responses function call args:', e);
+      }
+    }
+  }
+  return { speechText: speechText.trim(), functionCalls };
+}
+
+async function postJson(url: string, key: string, body: Record<string, any>): Promise<any> {
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: openAIAuthHeaders(key),
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const errorText = await res.text();
+    throw new Error(`API Error (${res.status}): ${errorText}`);
+  }
+  return res.json();
+}
+
+/**
+ * Tool-calling path for models that require /v1/responses (gpt-6-astra).
+ * Text-only follow-ups reuse the same endpoint (Chat Completions without
+ * tools is allowed for Astra, but Responses keeps a single code path).
+ */
+async function handleOpenAIResponsesCall(
+  model: string,
+  key: string,
+  message: string,
+  context: any,
+  history: any[] = []
+) {
+  const apiModel = resolveApiModelIdServer(model);
+  const input = [
+    { role: 'system', content: buildSystemPrompt(context) },
+    ...(history || []).slice(-6).map((h: any) => ({ role: h.role, content: h.content })),
+    { role: 'user', content: message },
+  ];
+
+  const data = await postJson('https://api.openai.com/v1/responses', key, buildResponsesBody(apiModel, input, true));
+  let { speechText, functionCalls } = parseResponsesOutput(data);
+
+  if (!speechText.trim() && functionCalls.length > 0) {
+    try {
+      const summaryData = await postJson(
+        'https://api.openai.com/v1/responses',
+        key,
+        buildResponsesBody(apiModel, [
+          { role: 'system', content: buildSystemPrompt(context) },
+          { role: 'user', content: `You just executed these actions for the user's prompt "${message}": ${JSON.stringify(functionCalls)}. In 1-2 natural spoken sentences, tell the user what you crafted or modified.` },
+        ], false)
+      );
+      const parsed = parseResponsesOutput(summaryData);
+      if (parsed.speechText) speechText = parsed.speechText;
+    } catch {}
+  }
+
+  return { speechText: speechText.trim(), functionCalls };
+}
+
+export async function handleOpenAICompatibleCall(
   endpointUrl: string,
   model: string,
   key: string,
@@ -712,32 +874,20 @@ async function handleOpenAICompatibleCall(
   history: any[] = []
 ) {
   const apiModel = resolveApiModelIdServer(model);
+
+  // gpt-6-astra: function tools are Responses-only (Chat Completions 400s).
+  if (isFirstPartyOpenAI(endpointUrl) && openAIToolsNeedResponses(apiModel)) {
+    return handleOpenAIResponsesCall(apiModel, key, message, context, history);
+  }
+
   const messages = [
     { role: "system", content: buildSystemPrompt(context) },
     ...(history || []).slice(-6).map((h: any) => ({ role: h.role, content: h.content })),
     { role: "user", content: message }
   ];
 
-  const res = await fetch(endpointUrl, {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${key}`,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
-      model: apiModel,
-      messages,
-      tools: OPENAI_TOOLS,
-      temperature: 0.75
-    })
-  });
+  const data = await postJson(endpointUrl, key, buildChatCompletionsBody(endpointUrl, apiModel, messages, true));
 
-  if (!res.ok) {
-    const errorText = await res.text();
-    throw new Error(`API Error (${res.status}): ${errorText}`);
-  }
-
-  const data = await res.json();
   const choice = data.choices?.[0]?.message;
   let speechText = choice?.content || "";
   const functionCalls: any[] = [];
@@ -760,25 +910,11 @@ async function handleOpenAICompatibleCall(
   // If text is missing with tool calls, generate spontaneous voice text
   if (!speechText.trim() && functionCalls.length > 0) {
     try {
-      const summaryRes = await fetch(endpointUrl, {
-        method: "POST",
-        headers: {
-          "Authorization": `Bearer ${key}`,
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          model: apiModel,
-          messages: [
-            { role: "system", content: buildSystemPrompt(context) },
-            { role: "user", content: `You just executed these actions for the user's prompt "${message}": ${JSON.stringify(functionCalls)}. In 1-2 natural spoken sentences, tell the user what you crafted or modified.` }
-          ],
-          temperature: 0.75
-        })
-      });
-      if (summaryRes.ok) {
-        const sData = await summaryRes.json();
-        speechText = sData.choices?.[0]?.message?.content || "";
-      }
+      const sData = await postJson(endpointUrl, key, buildChatCompletionsBody(endpointUrl, apiModel, [
+        { role: "system", content: buildSystemPrompt(context) },
+        { role: "user", content: `You just executed these actions for the user's prompt "${message}": ${JSON.stringify(functionCalls)}. In 1-2 natural spoken sentences, tell the user what you crafted or modified.` }
+      ], false));
+      speechText = sData.choices?.[0]?.message?.content || "";
     } catch {}
   }
 
@@ -1054,4 +1190,10 @@ OUTPUT FORMAT: Strict JSON only.
   });
 }
 
-startServer();
+// Only auto-start when executed directly (`tsx server.ts` in dev,
+// `node dist/server.cjs` in prod). Importing the module (tests) must not
+// bind the port.
+const invokedDirectly = !!process.argv[1] && /server\.(cjs|js|ts)$/.test(process.argv[1]);
+if (invokedDirectly) {
+  startServer();
+}
