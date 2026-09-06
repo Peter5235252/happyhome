@@ -4,7 +4,7 @@
  * Includes comprehensive WebGPU debugging, error scope capture, and diagnostics.
  */
 
-import { getComputeShaderWGSL, BLIT_SHADER_WGSL } from './shaders/raytracer.compute.wgsl.ts';
+import { getComputeShaderWGSL, BLIT_SHADER_WGSL } from './shaders/shaders.ts';
 import { sanitizeInjectedWGSL, validateFullWGSL } from './shaders/wgslSafety.ts';
 import { CameraState, PerformanceStats, RenderSettings, WebGPUDiagnostics } from './types';
 
