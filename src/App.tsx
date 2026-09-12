@@ -82,7 +82,7 @@ export default function App() {
       const saved = localStorage.getItem('voice_assistant_api_keys');
       const parsed = saved ? JSON.parse(saved) : {};
       // Migrate legacy 'xai' key to 'spacexai' (July 2026 rebrand) so existing
-      // users keep their saved SpaceXAI key after the provider id rename.
+      // users keep their saved Grok key after the provider id rename.
       if (parsed && typeof parsed === 'object' && parsed.xai && !parsed.spacexai) {
         parsed.spacexai = parsed.xai;
       }

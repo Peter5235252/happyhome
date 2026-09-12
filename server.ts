@@ -133,17 +133,17 @@ function validateCustomWGSLServer(
 // Gemini gemini-3.5/3.6/3.7/3.8-flash (GA) + gemini-3-flash (deprecated 2026-07-31,
 // kept ONLY as explicit last-resort fallback per product requirement — never primary).
 // gemini-1.5-flash is LONG deprecated/shut down and MUST NEVER be used or cascaded to.
-// OpenAI gpt-5.6-luna/terra/sol + gpt-6-astra,
+// OpenAI gpt-5.6-luna,
 // SpaceXAI grok-4.6 (dot; rebranded from xAI July 6, 2026 — endpoint/key format unchanged),
-// Anthropic claude-sonnet-5 / claude-opus-5 / claude-fable-5-1
-// (hyphen)). Unknown values fall back to the default
+// Anthropic claude-sonnet-5
+// ). Unknown values fall back to the default
 // EXPLICITLY with a warning — never silently route to Gemini.
 const KNOWN_API_MODEL_IDS = new Set([
   'gemini-3.5-flash', 'gemini-3.6-flash', 'gemini-3.7-flash', 'gemini-3.8-flash',
   'gemini-3-flash',
-  'gpt-5.6-luna', 'gpt-5.6-terra', 'gpt-5.6-sol', 'gpt-6-astra',
+  'gpt-5.6-luna',
   'grok-4.6',
-  'claude-sonnet-5', 'claude-opus-5', 'claude-fable-5-1',
+  'claude-sonnet-5',
 ]);
 
 // Explicitly dead model ids that must never be called. If requested (stale client,
@@ -160,7 +160,6 @@ const DEPRECATED_GEMINI_MODEL_REMAP: Record<string, string> = {
 
 export function resolveApiModelIdServer(uiModelId: string): string {
   if (!uiModelId) return 'gemini-3.8-flash';
-  if (uiModelId === 'claude-fable-5.1') return 'claude-fable-5-1'; // historic dot-bug
   if (DEPRECATED_GEMINI_MODEL_REMAP[uiModelId]) {
     console.warn(`Deprecated model id "${uiModelId}" requested — remapped to "${DEPRECATED_GEMINI_MODEL_REMAP[uiModelId]}" (1.5/2.x are shut down).`);
     return DEPRECATED_GEMINI_MODEL_REMAP[uiModelId];
@@ -837,8 +836,6 @@ CORE AGENTIC BEHAVIORS:
 // ---------------------------------------------------------------------------
 export const MAX_SPEECH_CHARS = 380;
 export const CHAT_MAX_OUTPUT_TOKENS = 200;
-export const RESPONSES_TOOL_MAX_OUTPUT_TOKENS = 1000; // includes reasoning tokens
-export const RESPONSES_TEXT_MAX_OUTPUT_TOKENS = 250;
 export const CLAUDE_MAX_TOKENS = 220;
 export const GEMINI_MAX_OUTPUT_TOKENS = 200;
 export const COMPAT_MAX_TOKENS = 200; // SpaceXAI chat completions
@@ -1229,18 +1226,15 @@ async function handleGeminiCall(model: string, apiKey: string | undefined, messa
 // ---------------------------------------------------------------------------
 // OpenAI payload rules (verified against official docs, Sept 2026):
 // - https://developers.openai.com/api/docs/guides/reasoning
-// - https://developers.openai.com/api/docs/guides/migrate-to-responses
 // - https://developers.openai.com/api/docs/guides/latest-model
 // - https://learn.microsoft.com/en-us/azure/foundry/openai/how-to/reasoning
 //
-// gpt-5.6 (luna/terra/sol) are reasoning models defaulting to `medium` effort.
+// gpt-5.6-luna is a reasoning model defaulting to `medium` effort.
 // On /v1/chat/completions ANY request carrying function `tools` fails — even
 // with no explicit reasoning_effort — unless `reasoning_effort` is "none":
 //   400 Function tools with reasoning_effort are not supported for
 //   gpt-5.6-luna in /v1/chat/completions. To use function tools, use
 //   /v1/responses or set reasoning_effort to 'none'.
-// gpt-6-astra is stricter: `none` itself 400s, and Chat Completions does not
-// support function calling with it at all — tool calls MUST use /v1/responses.
 // Reasoning models also reject `temperature`/`top_p` on Chat Completions.
 // Third-party OpenAI-compatible endpoints (SpaceXAI) are unaffected.
 // ---------------------------------------------------------------------------
@@ -1250,11 +1244,6 @@ export function isFirstPartyOpenAI(endpointUrl: string): boolean {
 
 export function isOpenAIReasoningModel(apiModel: string): boolean {
   return /^gpt-(5|6|o)/.test(apiModel);
-}
-
-/** gpt-6+ cannot do function tools on Chat Completions at all → /v1/responses. */
-export function openAIToolsNeedResponses(apiModel: string): boolean {
-  return /^gpt-6/.test(apiModel);
 }
 
 function openAIAuthHeaders(key: string): Record<string, string> {
@@ -1292,59 +1281,6 @@ export function buildChatCompletionsBody(
   return body;
 }
 
-/** Convert Chat Completions function tools to Responses API function tools. */
-export function toResponsesTools(openaiTools: any[]): any[] {
-  return (openaiTools || []).map((t) => ({
-    type: 'function',
-    name: t.function.name,
-    description: t.function.description,
-    parameters: t.function.parameters,
-    strict: false,
-  }));
-}
-
-/** Responses API body. Pure (exported for tests). */
-export function buildResponsesBody(apiModel: string, messages: any[], withTools: boolean): Record<string, any> {
-  const body: Record<string, any> = {
-    model: apiModel,
-    input: messages,
-    store: false,
-  };
-  if (withTools) {
-    body.tools = toResponsesTools(OPENAI_TOOLS);
-    // gpt-6-astra has no `none` level; medium is the documented default balance.
-    body.reasoning = { effort: 'medium' };
-    // Room for reasoning tokens; speech is still hard-truncated downstream.
-    body.max_output_tokens = RESPONSES_TOOL_MAX_OUTPUT_TOKENS;
-  } else {
-    body.max_output_tokens = RESPONSES_TEXT_MAX_OUTPUT_TOKENS;
-  }
-  return body;
-}
-
-/** Parse a /v1/responses payload into { speechText, functionCalls }. Pure. */
-export function parseResponsesOutput(data: any): { speechText: string; functionCalls: any[] } {
-  let speechText = '';
-  const functionCalls: any[] = [];
-  for (const item of data?.output || []) {
-    if (item?.type === 'message') {
-      for (const c of item.content || []) {
-        if ((c?.type === 'output_text') && typeof c.text === 'string') speechText += c.text + ' ';
-      }
-    } else if (item?.type === 'function_call' && item.name) {
-      try {
-        functionCalls.push({
-          name: item.name,
-          args: typeof item.arguments === 'string' ? JSON.parse(item.arguments || '{}') : (item.arguments || {}),
-        });
-      } catch (e) {
-        console.warn('Failed to parse Responses function call args:', e);
-      }
-    }
-  }
-  return { speechText: speechText.trim(), functionCalls };
-}
-
 async function postJson(url: string, key: string, body: Record<string, any>): Promise<any> {
   const res = await fetch(url, {
     method: 'POST',
@@ -1356,51 +1292,6 @@ async function postJson(url: string, key: string, body: Record<string, any>): Pr
     throw new Error(`API Error (${res.status}): ${errorText}`);
   }
   return res.json();
-}
-
-/**
- * Tool-calling path for models that require /v1/responses (gpt-6-astra).
- * Text-only follow-ups reuse the same endpoint (Chat Completions without
- * tools is allowed for Astra, but Responses keeps a single code path).
- */
-async function handleOpenAIResponsesCall(
-  model: string,
-  key: string,
-  message: string,
-  context: any,
-  history: any[] = []
-) {
-  const apiModel = resolveApiModelIdServer(model);
-  const safeMessage = (sanitizeTranscript(message).slice(0, MAX_TRANSCRIPT_CHARS) || String(message || '').slice(0, MAX_TRANSCRIPT_CHARS));
-  const safeHistory = (history || [])
-    .filter((h: any) => h && typeof h.content === 'string' && h.content.trim().length >= 2)
-    .slice(-6)
-    .map((h: any) => ({ role: h.role, content: String(h.content).slice(0, 1000) }));
-  const input = [
-    { role: 'system', content: buildSystemPrompt(context) },
-    ...safeHistory,
-    { role: 'user', content: safeMessage },
-  ];
-
-  const data = await postJson('https://api.openai.com/v1/responses', key, buildResponsesBody(apiModel, input, true));
-  let { speechText, functionCalls } = parseResponsesOutput(data);
-
-  if (!speechText.trim() && functionCalls.length > 0) {
-    try {
-      const summaryData = await postJson(
-        'https://api.openai.com/v1/responses',
-        key,
-        buildResponsesBody(apiModel, [
-          { role: 'system', content: buildSystemPrompt(context) },
-          { role: 'user', content: `You just executed these actions for the user's prompt "${safeMessage}": ${JSON.stringify(functionCalls).slice(0, 4000)}. In exactly 1-2 short spoken sentences (under 45 words, no lists, no markdown), tell the user what you crafted or modified.` },
-        ], false)
-      );
-      const parsed = parseResponsesOutput(summaryData);
-      if (parsed.speechText) speechText = parsed.speechText;
-    } catch {}
-  }
-
-  return { speechText: speechText.trim(), functionCalls };
 }
 
 export async function handleOpenAICompatibleCall(
@@ -1417,11 +1308,6 @@ export async function handleOpenAICompatibleCall(
     .filter((h: any) => h && typeof h.content === 'string' && h.content.trim().length >= 2)
     .slice(-6)
     .map((h: any) => ({ role: h.role, content: String(h.content).slice(0, 1000) }));
-
-  // gpt-6-astra: function tools are Responses-only (Chat Completions 400s).
-  if (isFirstPartyOpenAI(endpointUrl) && openAIToolsNeedResponses(apiModel)) {
-    return handleOpenAIResponsesCall(apiModel, key, safeMessage, context, safeHistory);
-  }
 
   const messages = [
     { role: "system", content: buildSystemPrompt(context) },
@@ -1722,7 +1608,7 @@ async function startServer() {
         const key = apiKey || process.env.SPACEXAI_API_KEY || process.env.XAI_API_KEY;
         if (!key) {
           return res.json({
-            speechText: "Please enter your SpaceXAI API key in the settings menu to connect Grok.",
+            speechText: "Please enter your Grok API key in the settings menu.",
             functionCalls: []
           });
         }
