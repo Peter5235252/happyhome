@@ -24,5 +24,21 @@ export default defineConfig(() => {
       // Disable file watching when DISABLE_HMR is true to save CPU during agent edits.
       watch: process.env.DISABLE_HMR === 'true' ? null : {},
     },
+    build: {
+      // Ruthless low-power perf: smaller JS = faster parse on weak CPUs.
+      target: 'es2020',
+      minify: 'esbuild' as const,
+      cssMinify: true,
+      sourcemap: false,
+      chunkSizeWarningLimit: 1200,
+      assetsInlineLimit: 4096,
+      rollupOptions: {
+        output: {
+          manualChunks: {
+            vendor: ['react', 'react-dom'],
+          },
+        },
+      },
+    },
   };
 });

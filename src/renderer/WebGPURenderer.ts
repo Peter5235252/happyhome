@@ -45,6 +45,13 @@ export class WebGPURenderer {
   
   private onStatsCallback?: (stats: PerformanceStats) => void;
   private isDestroyed: boolean = false;
+  // Ruthless low-power adaptation: track sustained fps and step resolutionScale
+  // down (1.0 -> 0.75 -> 0.5) when the GPU can't keep up, instead of melting
+  // weak iGPUs at full res. Restores when headroom returns.
+  private lowFpsStreak: number = 0;
+  private highFpsStreak: number = 0;
+  private lastAdaptTime: number = 0;
+  private visibilityHandler: (() => void) | null = null;
 
   public diagnostics: WebGPUDiagnostics = {
     adapterName: 'Initializing Compute Raytracer...',
@@ -65,7 +72,8 @@ export class WebGPURenderer {
     fov: 46,
   };
 
-  // Render Settings
+  // Render Settings — low-power default: start at 0.85 scale on weak CPUs
+  // (<=4 cores or <=4GB RAM) so first paint is fast; auto-upscales if fps allows.
   public settings: RenderSettings = {
     timeOfDay: 0.35, // Bright cheerful daylight
     godraysEnabled: true,
@@ -79,11 +87,21 @@ export class WebGPURenderer {
     cloudDensity: 0.8,
     cameraPreset: 'home_perspective',
     debugMode: 0,
-    resolutionScale: 1.0,
+    resolutionScale: WebGPURenderer.detectLowPower() ? 0.75 : 1.0,
     lodMode: 'auto',
     lodBias: 1.0,
     simulationSpeed: 1.0,
   };
+
+  private static detectLowPower(): boolean {
+    try {
+      const cores = (navigator as any).hardwareConcurrency || 8;
+      const mem = (navigator as any).deviceMemory || 8;
+      return cores <= 4 || mem <= 4;
+    } catch {
+      return false;
+    }
+  }
 
   public dynamicObjects: import("./types").DynamicObject[] = [];
 
@@ -958,11 +976,45 @@ export class WebGPURenderer {
 
     this.frameCount++;
     const delta = currentTime - this.lastTime;
-    if (delta >= 500) {
+    if (delta >= 750) {
       this.fps = Math.round((this.frameCount * 1000) / delta);
       this.frameTimeMs = Number((delta / this.frameCount).toFixed(1));
       this.frameCount = 0;
       this.lastTime = currentTime;
+
+      // Auto quality: 2 consecutive low windows step down, 4 high windows step up.
+      // Throttled to at most one change per 2s to avoid oscillation.
+      const canAdapt = currentTime - this.lastAdaptTime > 2000;
+      if (this.fps < 28) {
+        this.lowFpsStreak++;
+        this.highFpsStreak = 0;
+        if (this.lowFpsStreak >= 2 && canAdapt) {
+          const cur = this.settings.resolutionScale || 1.0;
+          const next = cur > 0.75 ? 0.75 : cur > 0.5 ? 0.5 : cur;
+          if (next !== cur) {
+            this.settings.resolutionScale = next;
+            this.resize(this.canvas.clientWidth, this.canvas.clientHeight);
+            this.lowFpsStreak = 0;
+            this.lastAdaptTime = currentTime;
+          }
+        }
+      } else if (this.fps > 52) {
+        this.highFpsStreak++;
+        this.lowFpsStreak = 0;
+        if (this.highFpsStreak >= 4 && canAdapt) {
+          const cur = this.settings.resolutionScale || 1.0;
+          const next = cur < 0.75 ? 0.75 : cur < 1.0 ? 1.0 : cur;
+          if (next !== cur) {
+            this.settings.resolutionScale = next;
+            this.resize(this.canvas.clientWidth, this.canvas.clientHeight);
+            this.highFpsStreak = 0;
+            this.lastAdaptTime = currentTime;
+          }
+        }
+      } else {
+        this.lowFpsStreak = 0;
+        this.highFpsStreak = 0;
+      }
 
       if (this.onStatsCallback) {
         this.onStatsCallback({
@@ -1050,6 +1102,20 @@ export class WebGPURenderer {
       this.lastTime = performance.now();
       this.animationFrameId = requestAnimationFrame(this.render);
     }
+    // Pause GPU work when tab is hidden: saves battery/CPU and prevents a
+    // backlog of rAF callbacks from hammering weak machines on return.
+    if (!this.visibilityHandler && typeof document !== 'undefined') {
+      this.visibilityHandler = () => {
+        if (document.hidden) {
+          this.stopRenderLoop();
+        } else if (!this.isDestroyed && this.animationFrameId === null) {
+          this.lastTime = performance.now();
+          this.frameCount = 0;
+          this.animationFrameId = requestAnimationFrame(this.render);
+        }
+      };
+      document.addEventListener('visibilitychange', this.visibilityHandler);
+    }
   }
 
   public stopRenderLoop(): void {
@@ -1063,6 +1129,10 @@ export class WebGPURenderer {
     if (this.isDestroyed) return;
     this.isDestroyed = true;
     this.stopRenderLoop();
+    if (this.visibilityHandler && typeof document !== 'undefined') {
+      try { document.removeEventListener('visibilitychange', this.visibilityHandler); } catch {}
+      this.visibilityHandler = null;
+    }
 
     if (this.outputTexture) {
       try { this.outputTexture.destroy(); } catch {}

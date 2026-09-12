@@ -23,6 +23,33 @@
   will-change: transform, opacity;
 }
 
+/* Low-power fallback: heavy backdrop-blur + saturate is the #1 CSS cost on
+   weak iGPUs. Halve the blur when the user prefers reduced motion or is on a
+   small/low-power viewport — visuals stay glassy, compositing gets cheaper. */
+@media (prefers-reduced-motion: reduce), (max-width: 768px) {
+  .frosted-glass,
+  .frosted-glass-panel {
+    backdrop-filter: blur(12px) saturate(140%);
+    -webkit-backdrop-filter: blur(12px) saturate(140%);
+  }
+  .frosted-glass-backdrop {
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+  }
+  .frosted-glass-subcard {
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+  }
+  /* Disable infinite thinking animations for users who asked for less motion. */
+  .thinking-glass-container,
+  .thinking-inner-shift,
+  .thinking-button-shift,
+  .thinking-dot-shift,
+  .thinking-text-shift {
+    animation: none;
+  }
+}
+
 .frosted-glass-panel {
   background: rgba(10, 10, 10, 0.55);
   backdrop-filter: blur(24px) saturate(180%);

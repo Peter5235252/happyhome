@@ -95,7 +95,8 @@ export function getPreferredAudioEngineForProvider(providerId: string): { engine
       return { engine: 'gemini', voiceId: 'Puck' };
     case 'openai':
       return { engine: 'openai', voiceId: 'nova' };
-    case 'xai':
+    case 'spacexai':
+    case 'xai': // legacy provider id (pre-SpaceXAI rebrand) — same routing
     case 'anthropic':
       // For text-first LLM providers, pair with ultra-natural Cartesia or high-fidelity Gemini
       return { engine: 'cartesia', voiceId: 'db6b0ed5-d5d3-463d-ae85-518a07d3c2b4' };

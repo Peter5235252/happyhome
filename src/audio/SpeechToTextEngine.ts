@@ -15,6 +15,10 @@ export interface STTCallbacks {
   onStateChange?: (state: 'idle' | 'listening' | 'transcribing' | 'error') => void;
   onError?: (error: string) => void;
   getApiKey?: () => string | undefined;
+  /** Returns the AI's last spoken line for TTS-echo suppression. */
+  getLastSpoken?: () => string | undefined;
+  /** Returns true while TTS is playing (mic should ignore echo). */
+  isTtsSpeaking?: () => boolean;
 }
 
 export class SpeechToTextEngine {
@@ -36,8 +40,10 @@ export class SpeechToTextEngine {
   private silenceStartTime: number | null = null;
   private consecutiveSpeechFrames: number = 0;
   private readonly SILENCE_DURATION_MS: number = 950;
-  private readonly SPEECH_RMS_THRESHOLD: number = 0.012;
-  private readonly SPEECH_START_FRAMES: number = 2; // ~30ms of sustained energy triggers instant interrupt
+  // 0.02 ignores low-level TTS bleed + fan noise; 0.012 was so sensitive the
+  // AI's own speaker output counted as "user speech" and got transcribed.
+  private readonly SPEECH_RMS_THRESHOLD: number = 0.02;
+  private readonly SPEECH_START_FRAMES: number = 3; // ~50ms sustained energy (rejects clicks/pops)
 
   // Optional Browser Live Interim Feedback
   private liveInterimRecognition: any = null;
@@ -144,8 +150,9 @@ export class SpeechToTextEngine {
 
       const source = this.audioContext.createMediaStreamSource(stream);
       this.analyser = this.audioContext.createAnalyser();
-      this.analyser.fftSize = 512;
-      this.analyser.smoothingTimeConstant = 0.2;
+      // 256-point FFT is half the CPU of 512 and plenty for RMS VAD.
+      this.analyser.fftSize = 256;
+      this.analyser.smoothingTimeConstant = 0.35;
       source.connect(this.analyser);
 
       // 3. Start MediaRecorder
@@ -182,7 +189,9 @@ export class SpeechToTextEngine {
         }
       }
 
-      const options = mimeType ? { mimeType, audioBitsPerSecond: 64000 } : undefined;
+      // 32kbps mono Opus is fully intelligible for STT at half the bytes/CPU
+      // of 64kbps, and keeps /api/transcribe payloads small on weak PCs.
+      const options = mimeType ? { mimeType, audioBitsPerSecond: 32000 } : undefined;
       const recorder = new MediaRecorder(stream, options);
       this.mediaRecorder = recorder;
       this.recordedChunks = [];
@@ -217,8 +226,9 @@ export class SpeechToTextEngine {
         }
       };
 
-      // Collect data every 200ms
-      recorder.start(200);
+      // Collect data every 500ms (was 200ms): fewer Blob events + less
+      // main-thread churn on low-power CPUs, still fine for 950ms VAD window.
+      recorder.start(500);
     } catch (e) {
       console.warn("MediaRecorder start error:", e);
     }
@@ -247,11 +257,18 @@ export class SpeechToTextEngine {
       const now = performance.now();
 
       if (rms > this.SPEECH_RMS_THRESHOLD) {
+        // While the AI itself is speaking, the mic hears the speaker output.
+        // Count it for barge-in metering but do NOT mark the chunk as user
+        // speech — otherwise the TTS echo gets transcribed and re-injected as
+        // the next user prompt (the reported self-talk hallucination loop).
+        const ttsActive = this.callbacks.isTtsSpeaking?.() === true;
         this.consecutiveSpeechFrames++;
         if (this.consecutiveSpeechFrames >= this.SPEECH_START_FRAMES) {
           // Trigger instant acoustic barge-in / interruption
           this.callbacks.onSpeechStart?.();
-          this.hasSpokenInChunk = true;
+          if (!ttsActive) {
+            this.hasSpokenInChunk = true;
+          }
           this.silenceStartTime = null;
         }
       } else {
@@ -289,6 +306,10 @@ export class SpeechToTextEngine {
 
       this.liveInterimRecognition.onresult = (event: any) => {
         if (!this.isListening) return;
+        // Ignore interim results while TTS is playing: Web Speech hears the
+        // speaker and would set hasSpokenInChunk + currentInterim to the AI's
+        // own words, which then become fallback "user" prompts.
+        if (this.callbacks.isTtsSpeaking?.() === true) return;
         let interim = '';
         for (let i = event.resultIndex; i < event.results.length; ++i) {
           interim += event.results[i][0].transcript;
@@ -312,13 +333,19 @@ export class SpeechToTextEngine {
   }
 
   private async transcribeAudioWithGemini(blob: Blob, mimeType: string): Promise<void> {
-    if (blob.size < 1000) {
+    // Drop sub-2KB chunks (silence/clicks) locally — avoids a network round-trip
+    // and gives the generative transcriber nothing to hallucinate on.
+    if (blob.size < 2000) {
       if (this.currentInterim) {
         const fallbackText = this.currentInterim;
         this.currentInterim = '';
         this.callbacks.onFinalTranscript?.(fallbackText);
       }
       return;
+    }
+    // Cap pathological chunks (~30s+ at 32kbps) so weak PCs never POST 25MB.
+    if (blob.size > 1_500_000) {
+      blob = blob.slice(0, 1_500_000, blob.type);
     }
 
     this.isTranscribing = true;
@@ -327,6 +354,7 @@ export class SpeechToTextEngine {
     try {
       const base64 = await this.blobToBase64(blob);
       const apiKey = this.callbacks.getApiKey?.();
+      const lastSpoken = this.callbacks.getLastSpoken?.();
 
       const response = await fetch('/api/transcribe', {
         method: 'POST',
@@ -337,6 +365,7 @@ export class SpeechToTextEngine {
           audio: base64,
           mimeType: mimeType || 'audio/webm',
           apiKey,
+          lastSpoken,
         }),
       });
 

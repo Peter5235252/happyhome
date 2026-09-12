@@ -61,7 +61,7 @@ export const VoiceAssistantPill: React.FC<VoiceAssistantPillProps> = ({
   // Previously this matched `id` only with a hardcoded-index Gemini fallback,
   // so any alias/stale value rendered as Gemini even after picking another model.
   const currentModel = findModelInfo(selectedModel);
-  const [activeProviderTab, setActiveProviderTab] = useState<'gemini' | 'openai' | 'xai' | 'anthropic'>(
+  const [activeProviderTab, setActiveProviderTab] = useState<'gemini' | 'openai' | 'spacexai' | 'anthropic'>(
     currentModel.providerId
   );
 

@@ -80,7 +80,13 @@ export default function App() {
   const [apiKeys, setApiKeys] = useState<Record<string, string>>(() => {
     try {
       const saved = localStorage.getItem('voice_assistant_api_keys');
-      return saved ? JSON.parse(saved) : {};
+      const parsed = saved ? JSON.parse(saved) : {};
+      // Migrate legacy 'xai' key to 'spacexai' (July 2026 rebrand) so existing
+      // users keep their saved SpaceXAI key after the provider id rename.
+      if (parsed && typeof parsed === 'object' && parsed.xai && !parsed.spacexai) {
+        parsed.spacexai = parsed.xai;
+      }
+      return parsed;
     } catch {
       return {};
     }
@@ -104,6 +110,11 @@ export default function App() {
 
   const sttRef = useRef<SpeechToTextEngine | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
+  // Echo/dedup guards: the mic hears the speaker. Without these, the AI's own
+  // TTS output is transcribed and re-sent as the next user prompt (self-talk loop).
+  const lastPromptRef = useRef<{ text: string; time: number }>({ text: '', time: 0 });
+  const lastResponseRef = useRef<string>('');
+  const normEcho = (t: string) => t.toLowerCase().replace(/[^a-z0-9 ]/g, '').replace(/\s+/g, ' ').trim();
 
   // Seamless Interruption Handler
   const handleInterrupt = useCallback(() => {
@@ -202,7 +213,22 @@ export default function App() {
 
   // Handle agent message dispatch
   const handleUserVoiceMessage = useCallback(async (userPrompt: string) => {
-    if (!userPrompt.trim()) return;
+    const trimmed = (userPrompt || '').trim();
+    if (trimmed.length < 2) return;
+    // Cap single utterances: keeps /api/voice-agent bodies small on weak PCs.
+    const capped = trimmed.length > 500 ? trimmed.slice(0, 500).split(' ').slice(0, -1).join(' ') || trimmed.slice(0, 500) : trimmed;
+
+    // Dedup: same utterance delivered twice (interim fallback + Gemini) — send once.
+    const now = Date.now();
+    const nCap = normEcho(capped);
+    if (nCap === normEcho(lastPromptRef.current.text) && now - lastPromptRef.current.time < 2500) return;
+    // Echo: transcript is just the AI's own last spoken line picked up by the mic.
+    const nLast = normEcho(lastResponseRef.current);
+    if (nCap && nLast && (nCap === nLast || (nCap.length > 20 && nLast.includes(nCap)) || (nLast.length > 20 && nCap.includes(nLast)))) {
+      return;
+    }
+    lastPromptRef.current = { text: capped, time: now };
+    const safePrompt = capped;
 
     // Interrupt any existing speech before processing new message
     naturalVoice.stop();
@@ -214,7 +240,7 @@ export default function App() {
     abortControllerRef.current = abortController;
 
     setVoiceState('thinking');
-    setTranscript(userPrompt);
+    setTranscript(safePrompt);
 
     try {
       const modelInfo = SUPPORTED_MODELS.find(m => m.id === selectedModel || m.apiModelId === selectedModel);
@@ -227,10 +253,10 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         signal: abortController.signal,
         body: JSON.stringify({
-          message: userPrompt,
+          message: safePrompt,
           model: apiModelId,
           apiKey,
-          history: conversationHistory,
+          history: conversationHistory.slice(-6),
           context: {
             dynamicObjects,
             dynamicObjectsCount: dynamicObjects.length,
@@ -446,11 +472,12 @@ export default function App() {
 
       const speech = data.speechText || "I've sculpted the scene to match your vision.";
       setLastResponse(speech);
+      lastResponseRef.current = speech;
 
       // Record in conversation history for multi-turn context
       setConversationHistory(prev => [
         ...prev.slice(-8),
-        { role: 'user', content: userPrompt },
+        { role: 'user', content: safePrompt },
         { role: 'assistant', content: speech }
       ]);
 
@@ -536,6 +563,8 @@ export default function App() {
               }
             },
             getApiKey: () => apiKeys.gemini || undefined,
+            getLastSpoken: () => lastResponseRef.current,
+            isTtsSpeaking: () => naturalVoice.getIsSpeaking(),
           });
           try {
             stt.start();
@@ -594,6 +623,7 @@ export default function App() {
       ? "Welcome back! I remember your preferences. How would you like to reshape the scene?"
       : "Voice mode active. How would you like to reshape the scene?";
     setLastResponse(welcome);
+    lastResponseRef.current = welcome;
     naturalVoice.speak(welcome, {
       apiKey: apiKeys['gpt_live'],
       onEnd: () => {
@@ -651,6 +681,8 @@ export default function App() {
         }
       },
       getApiKey: () => apiKeys.gemini || undefined,
+      getLastSpoken: () => lastResponseRef.current,
+      isTtsSpeaking: () => naturalVoice.getIsSpeaking(),
     });
 
     stt.start();
@@ -758,13 +790,21 @@ export default function App() {
       });
   }, []);
 
-  // Handle Resize
+  // Handle Resize — debounced + DPR-capped for weak iGPUs.
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    const handleResize = () => {
-      const dpr = Math.min(window.devicePixelRatio || 1, 1.5); // high fidelity with smooth performance
+    const isLowPower =
+      ((navigator as any).hardwareConcurrency || 8) <= 4 ||
+      ((navigator as any).deviceMemory || 8) <= 4;
+    // 1.0 on low-power (biggest single win), 1.25 otherwise (was 1.5).
+    const dprCap = isLowPower ? 1.0 : 1.25;
+
+    let raf = 0;
+    let timer: any = null;
+    const applyResize = () => {
+      const dpr = Math.min(window.devicePixelRatio || 1, dprCap);
       const w = Math.floor(canvas.clientWidth * dpr);
       const h = Math.floor(canvas.clientHeight * dpr);
 
@@ -777,6 +817,13 @@ export default function App() {
         }
       }
     };
+    const handleResize = () => {
+      // Coalesce ResizeObserver + window resize bursts into one layout pass.
+      if (raf) cancelAnimationFrame(raf);
+      if (timer) clearTimeout(timer);
+      raf = requestAnimationFrame(applyResize);
+      timer = setTimeout(applyResize, 150);
+    };
 
     handleResize();
     const observer = new ResizeObserver(handleResize);
@@ -784,6 +831,8 @@ export default function App() {
 
     window.addEventListener('resize', handleResize);
     return () => {
+      if (raf) cancelAnimationFrame(raf);
+      if (timer) clearTimeout(timer);
       observer.disconnect();
       window.removeEventListener('resize', handleResize);
     };
