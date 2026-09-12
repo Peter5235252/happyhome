@@ -30,11 +30,14 @@ export interface RenderSettings {
   smokeSpeed: number;
   windSpeed: number;
   cloudDensity: number;
-  cameraPreset: 'svg_perspective' | 'cinematic' | 'meadow' | 'sunset';
-  showOriginalSvg: boolean;
+  cameraPreset: 'home_perspective' | 'svg_perspective' | 'cinematic' | 'meadow' | 'sunset' | 'aerial' | 'dramatic_low' | 'close_up' | 'garden_bench' | 'roof_chimney' | 'kite_flight' | string;
   debugMode: DebugRenderMode;
   resolutionScale: number; // 0.5, 0.75, 1.0
-  audioEnabled: boolean;
+  lodMode: 'auto' | 'ultra' | 'balanced' | 'performance';
+  lodBias: number; // 0.5 to 2.0 (1.0 default)
+  simulationSpeed: number; // 0.0 to 5.0 (1.0 default)
+  showBaseCottage?: boolean; // Controls whether base cottage structure is rendered
+  environmentStyle?: 'meadow' | 'courtyard' | 'desert' | 'water' | 'void' | 'alien' | string;
 }
 
 export interface WebGPUDiagnostics {
@@ -46,6 +49,11 @@ export interface WebGPUDiagnostics {
   shaderErrors: string[];
   validationErrors: string[];
   lastErrorTime?: string;
+  customShaderActive?: boolean;
+  customShaderLinesCount?: number;
+  isWebGPUStrict?: boolean;
+  hardwareSafetyStatus?: 'safe' | 'monitoring' | 'warning';
+  lastShaderCompilationTime?: string;
 }
 
 export interface PerformanceStats {
@@ -56,14 +64,40 @@ export interface PerformanceStats {
   sampleIndex: number;
   diagnostics: WebGPUDiagnostics;
 }
+
+export type DynamicShapeType = 
+  | 'sphere'
+  | 'box'
+  | 'cylinder'
+  | 'capsule'
+  | 'torus'
+  | 'cone'
+  | 'crystal'
+  | 'gem'
+  | 'lantern'
+  | 'pyramid'
+  | 'prism'
+  | 'arch'
+  | 'pillar'
+  | 'column'
+  | 'fountain'
+  | 'bench'
+  | 'star'
+  | 'flower'
+  | 'custom_procedural'
+  | string;
+
 export interface DynamicObject {
   id?: string;
   label?: string;
-  shape: 'sphere' | 'box' | 'cylinder' | 'capsule' | 'torus' | 'cone' | 'crystal' | 'lantern' | string;
+  shape: DynamicShapeType;
   position: number[];
   size?: number[];
   color: number[];
   roughness?: number;
   metallic?: number;
+  subsurface?: number;
+  isGlass?: boolean;
   emissive?: number[];
+  customFormula?: string; // Optional custom mathematical WGSL SDF expression
 }

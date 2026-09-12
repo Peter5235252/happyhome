@@ -27,8 +27,8 @@ struct Uniforms {
   debugMode: u32,
   
   camMoved: u32,
-  pad0: f32,
-  pad1: f32,
+  showBaseCottage: f32,
+  environmentStyle: f32,
   pad2: f32,
 };
 
@@ -208,96 +208,129 @@ fn fbm2D(p: vec2f) -> f32 {
 fn mapScene(p: vec3f) -> Hit {
   var res = Hit(MAX_DIST, MAT_NONE, vec2f(0.0));
 
-  // 1. TERRAIN & DISTANT HILLS
-  // Distant alpine elevation smoothly blends in far away without any discontinuous cliffs
-  let distFactor = smoothstep(-14.0, -75.0, p.z);
-  let gentleHills = (sin(p.x * 0.07) * 4.2 + cos(p.z * 0.05 + 1.2) * 3.2 + sin(p.x * 0.14) * 1.8) * distFactor;
-  let meadowSway = sin(p.x * 0.25) * 0.15 + cos(p.z * 0.20) * 0.12;
-  let groundY = meadowSway + gentleHills;
-  let dGround = (p.y - groundY) * 0.82;
-  
-  let isFarMtn = distFactor > 0.45;
-  let terrainMat = select(MAT_GRASS, MAT_DISTANT_HILLS, isFarMtn);
+  // 1. TERRAIN & DISTANT HORIZONS (Adaptive to environmentStyle)
+  // environmentStyle: 0 = meadow, 1 = courtyard, 2 = desert, 3 = water, 4 = void/obsidian, 5 = alien/cyber
+  let envStyle = u.environmentStyle;
+  var dGround = 0.0;
+  var isFarMtn = false;
+  var terrainMat = MAT_GRASS;
+
+  if (envStyle > 0.5 && envStyle < 1.5) {
+    // Courtyard / Flat Stone Plaza
+    dGround = (p.y - 0.0) * 0.95;
+    terrainMat = MAT_GRASS;
+  } else if (envStyle >= 1.5 && envStyle < 2.5) {
+    // Desert Sand Dunes
+    let dunes = sin(p.x * 0.12) * 1.4 + cos(p.z * 0.09) * 1.6 + sin((p.x + p.z) * 0.22) * 0.45;
+    dGround = (p.y - dunes) * 0.85;
+    terrainMat = MAT_GRASS;
+  } else if (envStyle >= 2.5 && envStyle < 3.5) {
+    // Reflective Water Plane
+    let ripples = (sin(p.x * 0.8 + u.time * 1.5) * 0.02 + cos(p.z * 0.8 + u.time * 1.2) * 0.02);
+    dGround = (p.y - ripples) * 0.95;
+    terrainMat = MAT_GRASS;
+  } else if (envStyle >= 3.5 && envStyle < 4.5) {
+    // Void / Obsidian Mirror
+    dGround = (p.y - 0.0) * 0.98;
+    terrainMat = MAT_GRASS;
+  } else if (envStyle >= 4.5) {
+    // Alien / Cyber Grid
+    let alienTerrain = sin(p.x * 0.15) * 0.6 + cos(p.z * 0.15) * 0.6;
+    dGround = (p.y - alienTerrain) * 0.88;
+    terrainMat = MAT_GRASS;
+  } else {
+    // Default Meadow & Distant Alpine Hills
+    let distFactor = smoothstep(-14.0, -75.0, p.z);
+    let gentleHills = (sin(p.x * 0.07) * 4.2 + cos(p.z * 0.05 + 1.2) * 3.2 + sin(p.x * 0.14) * 1.8) * distFactor;
+    let meadowSway = sin(p.x * 0.25) * 0.15 + cos(p.z * 0.20) * 0.12;
+    let groundY = meadowSway + gentleHills;
+    dGround = (p.y - groundY) * 0.82;
+    isFarMtn = distFactor > 0.45;
+    terrainMat = select(MAT_GRASS, MAT_DISTANT_HILLS, isFarMtn);
+  }
   res = opU(res, Hit(dGround, terrainMat, p.xz));
 
-  // Garden walkway path leading to the front door
-  if (p.z > 0.0 && p.z < 18.0 && abs(p.x) < 4.5 && !isFarMtn) {
-    let pathCurve = sin(p.z * 0.28) * 0.65;
-    let pathWidth = 0.85 + p.z * 0.08;
-    let dPath = abs(p.x - pathCurve) - pathWidth;
-    if (dPath < 0.15) {
-      let pathSDF = max(dGround - 0.015, dPath);
-      res = opU(res, Hit(pathSDF, MAT_PATH, p.xz));
+  // BASE COTTAGE STRUCTURE & SURROUNDINGS (Rendered only when showBaseCottage > 0.5)
+  if (u.showBaseCottage > 0.5) {
+    // Garden walkway path leading to the front door
+    if (p.z > 0.0 && p.z < 18.0 && abs(p.x) < 4.5 && !isFarMtn) {
+      let pathCurve = sin(p.z * 0.28) * 0.65;
+      let pathWidth = 0.85 + p.z * 0.08;
+      let dPath = abs(p.x - pathCurve) - pathWidth;
+      if (dPath < 0.15) {
+        let pathSDF = max(dGround - 0.015, dPath);
+        res = opU(res, Hit(pathSDF, MAT_PATH, p.xz));
+      }
     }
+
+    // 2. THE HAPPY HOUSE
+    // Main Brick Body
+    let houseBodyPos = p - vec3f(0.0, 1.4, 0.0);
+    let dHouseBody = sdRoundBox(houseBodyPos, vec3f(1.9, 1.4, 1.4), 0.05);
+    res = opU(res, Hit(dHouseBody, MAT_HOUSE_BRICK, houseBodyPos.xy));
+
+    // Exact Gable Roof (with slight eave overhang)
+    let roofPos = p - vec3f(0.0, 2.8, 0.0);
+    let dRoof = sdGableRoof(roofPos, 2.15, 1.45, 1.65);
+    res = opU(res, Hit(dRoof, MAT_ROOF_TILES, roofPos.xz));
+
+    // Chimney on the roof (Right side, towards rear)
+    let chimneyPos = p - vec3f(1.15, 3.6, -0.3);
+    let dChimney = sdBox(chimneyPos, vec3f(0.28, 0.9, 0.28));
+    let chimneyFlue = sdCylinder(chimneyPos - vec3f(0.0, 0.9, 0.0), 0.08, 0.22);
+    let dChimneyFinal = min(dChimney, chimneyFlue);
+    res = opU(res, Hit(dChimneyFinal, MAT_CHIMNEY, chimneyPos.xy));
+
+    // Front Windows (Facade at z = 1.40)
+    let winZ = p.z - 1.40;
+    let win1Pos = vec3f(p.x + 0.95, p.y - 1.45, winZ);
+    let dWin1Pane = sdBox(win1Pos, vec3f(0.42, 0.42, 0.035));
+    let dWin1Frame = max(sdBox(win1Pos, vec3f(0.46, 0.46, 0.05)), -sdBox(win1Pos, vec3f(0.40, 0.40, 0.1)));
+    let dWin1Mullions = min(sdBox(win1Pos, vec3f(0.40, 0.025, 0.045)), sdBox(win1Pos, vec3f(0.025, 0.40, 0.045)));
+
+    let win2Pos = vec3f(p.x - 0.95, p.y - 1.45, winZ);
+    let dWin2Pane = sdBox(win2Pos, vec3f(0.42, 0.42, 0.035));
+    let dWin2Frame = max(sdBox(win2Pos, vec3f(0.46, 0.46, 0.05)), -sdBox(win2Pos, vec3f(0.40, 0.40, 0.1)));
+    let dWin2Mullions = min(sdBox(win2Pos, vec3f(0.40, 0.025, 0.045)), sdBox(win2Pos, vec3f(0.025, 0.40, 0.045)));
+
+    res = opU(res, Hit(min(dWin1Pane, dWin2Pane), MAT_WINDOW_GLASS, win1Pos.xy));
+    res = opU(res, Hit(min(min(dWin1Frame, dWin2Frame), min(dWin1Mullions, dWin2Mullions)), MAT_WINDOW_FRAME, win1Pos.xy));
+
+    // Front Wooden Door & Brass Knob
+    let doorPos = vec3f(p.x, p.y - 0.88, winZ);
+    let dDoor = sdRoundBox(doorPos, vec3f(0.42, 0.88, 0.04), 0.02);
+    let knobPos = doorPos - vec3f(0.30, -0.05, 0.06);
+    let dKnob = sdSphere(knobPos, 0.04);
+    res = opU(res, Hit(dDoor, MAT_DOOR, doorPos.xy));
+    res = opU(res, Hit(dKnob, MAT_DOOR_KNOB, knobPos.xy));
+
+    // 3. THE TREE (Left side of house: x = -3.4)
+    let treeP = p - vec3f(-3.4, 0.0, 0.6);
+    let dTrunk = sdCylinder(treeP - vec3f(0.0, 1.4, 0.0), 1.4, 0.26);
+    let branch1 = sdCapsule(treeP, vec3f(0.0, 1.8, 0.0), vec3f(-0.7, 2.5, 0.3), 0.13);
+    let branch2 = sdCapsule(treeP, vec3f(0.0, 1.7, 0.0), vec3f(0.6, 2.4, -0.2), 0.12);
+    res = opU(res, Hit(min(dTrunk, min(branch1, branch2)), MAT_TREE_BARK, treeP.xy));
+
+    let crown1 = sdSphere(treeP - vec3f(0.0, 3.2, 0.0), 1.25);
+    let crown2 = sdSphere(treeP - vec3f(-0.7, 2.8, 0.3), 1.05);
+    let crown3 = sdSphere(treeP - vec3f(0.6, 2.9, -0.3), 0.95);
+    let crown4 = sdSphere(treeP - vec3f(0.1, 3.8, 0.1), 0.90);
+    let dLeaves = smin(smin(crown1, crown2, 0.35), smin(crown3, crown4, 0.35), 0.35);
+    res = opU(res, Hit(dLeaves, MAT_TREE_LEAVES, treeP.xy));
+
+    // 4. GARDEN PICKET FENCE
+    let postIdx = clamp(round((p.x - 2.2) / 0.55), 0.0, 6.0);
+    let postX = 2.2 + postIdx * 0.55;
+    let postP = vec3f(p.x - postX, p.y - 0.65, p.z - 0.2);
+    let dPost = sdBox(postP, vec3f(0.045, 0.65, 0.045));
+    
+    let railP = p - vec3f(3.85, 0.0, 0.2);
+    let rail1 = sdBox(railP - vec3f(0.0, 0.85, 0.0), vec3f(1.85, 0.035, 0.035));
+    let rail2 = sdBox(railP - vec3f(0.0, 0.40, 0.0), vec3f(1.85, 0.035, 0.035));
+    
+    let dFence = min(dPost, min(rail1, rail2));
+    res = opU(res, Hit(dFence, MAT_FENCE, vec2f(0.0)));
   }
-
-  // 2. THE HAPPY HOUSE
-  // Main Brick Body
-  let houseBodyPos = p - vec3f(0.0, 1.4, 0.0);
-  let dHouseBody = sdRoundBox(houseBodyPos, vec3f(1.9, 1.4, 1.4), 0.05);
-  res = opU(res, Hit(dHouseBody, MAT_HOUSE_BRICK, houseBodyPos.xy));
-
-  // Exact Gable Roof (with slight eave overhang)
-  let roofPos = p - vec3f(0.0, 2.8, 0.0);
-  let dRoof = sdGableRoof(roofPos, 2.15, 1.45, 1.65);
-  res = opU(res, Hit(dRoof, MAT_ROOF_TILES, roofPos.xz));
-
-  // Chimney on the roof (Right side, towards rear)
-  let chimneyPos = p - vec3f(1.15, 3.6, -0.3);
-  let dChimney = sdBox(chimneyPos, vec3f(0.28, 0.9, 0.28));
-  let chimneyFlue = sdCylinder(chimneyPos - vec3f(0.0, 0.9, 0.0), 0.08, 0.22);
-  let dChimneyFinal = min(dChimney, chimneyFlue);
-  res = opU(res, Hit(dChimneyFinal, MAT_CHIMNEY, chimneyPos.xy));
-
-  // Front Windows (Facade at z = 1.40)
-  let winZ = p.z - 1.40;
-  let win1Pos = vec3f(p.x + 0.95, p.y - 1.45, winZ);
-  let dWin1Pane = sdBox(win1Pos, vec3f(0.42, 0.42, 0.035));
-  let dWin1Frame = max(sdBox(win1Pos, vec3f(0.46, 0.46, 0.05)), -sdBox(win1Pos, vec3f(0.40, 0.40, 0.1)));
-  let dWin1Mullions = min(sdBox(win1Pos, vec3f(0.40, 0.025, 0.045)), sdBox(win1Pos, vec3f(0.025, 0.40, 0.045)));
-
-  let win2Pos = vec3f(p.x - 0.95, p.y - 1.45, winZ);
-  let dWin2Pane = sdBox(win2Pos, vec3f(0.42, 0.42, 0.035));
-  let dWin2Frame = max(sdBox(win2Pos, vec3f(0.46, 0.46, 0.05)), -sdBox(win2Pos, vec3f(0.40, 0.40, 0.1)));
-  let dWin2Mullions = min(sdBox(win2Pos, vec3f(0.40, 0.025, 0.045)), sdBox(win2Pos, vec3f(0.025, 0.40, 0.045)));
-
-  res = opU(res, Hit(min(dWin1Pane, dWin2Pane), MAT_WINDOW_GLASS, win1Pos.xy));
-  res = opU(res, Hit(min(min(dWin1Frame, dWin2Frame), min(dWin1Mullions, dWin2Mullions)), MAT_WINDOW_FRAME, win1Pos.xy));
-
-  // Front Wooden Door & Brass Knob
-  let doorPos = vec3f(p.x, p.y - 0.88, winZ);
-  let dDoor = sdRoundBox(doorPos, vec3f(0.42, 0.88, 0.04), 0.02);
-  let knobPos = doorPos - vec3f(0.30, -0.05, 0.06);
-  let dKnob = sdSphere(knobPos, 0.04);
-  res = opU(res, Hit(dDoor, MAT_DOOR, doorPos.xy));
-  res = opU(res, Hit(dKnob, MAT_DOOR_KNOB, knobPos.xy));
-
-  // 3. THE TREE (Left side of house: x = -3.4)
-  let treeP = p - vec3f(-3.4, 0.0, 0.6);
-  let dTrunk = sdCylinder(treeP - vec3f(0.0, 1.4, 0.0), 1.4, 0.26);
-  let branch1 = sdCapsule(treeP, vec3f(0.0, 1.8, 0.0), vec3f(-0.7, 2.5, 0.3), 0.13);
-  let branch2 = sdCapsule(treeP, vec3f(0.0, 1.7, 0.0), vec3f(0.6, 2.4, -0.2), 0.12);
-  res = opU(res, Hit(min(dTrunk, min(branch1, branch2)), MAT_TREE_BARK, treeP.xy));
-
-  let crown1 = sdSphere(treeP - vec3f(0.0, 3.2, 0.0), 1.25);
-  let crown2 = sdSphere(treeP - vec3f(-0.7, 2.8, 0.3), 1.05);
-  let crown3 = sdSphere(treeP - vec3f(0.6, 2.9, -0.3), 0.95);
-  let crown4 = sdSphere(treeP - vec3f(0.1, 3.8, 0.1), 0.90);
-  let dLeaves = smin(smin(crown1, crown2, 0.35), smin(crown3, crown4, 0.35), 0.35);
-  res = opU(res, Hit(dLeaves, MAT_TREE_LEAVES, treeP.xy));
-
-  // 4. GARDEN PICKET FENCE
-  let postIdx = clamp(round((p.x - 2.2) / 0.55), 0.0, 6.0);
-  let postX = 2.2 + postIdx * 0.55;
-  let postP = vec3f(p.x - postX, p.y - 0.65, p.z - 0.2);
-  let dPost = sdBox(postP, vec3f(0.045, 0.65, 0.045));
-  
-  let railP = p - vec3f(3.85, 0.0, 0.2);
-  let rail1 = sdBox(railP - vec3f(0.0, 0.85, 0.0), vec3f(1.85, 0.035, 0.035));
-  let rail2 = sdBox(railP - vec3f(0.0, 0.40, 0.0), vec3f(1.85, 0.035, 0.035));
-  
-  let dFence = min(dPost, min(rail1, rail2));
-  res = opU(res, Hit(dFence, MAT_FENCE, vec2f(0.0)));
 
   //__HAPPYHOME_DYNAMIC_SDF__
   return res;
@@ -398,14 +431,46 @@ fn getMaterial(p: vec3f, n: vec3f, hit: Hit) -> Material {
   let mat = hit.mat;
 
   if (mat == MAT_GRASS) {
-    let macroNoise = fbm2D(p.xz * 1.5);
-    let microNoise = noise2D(p.xz * 18.0);
-    let baseGrass = vec3f(0.18, 0.48, 0.15);
-    let lushGrass = vec3f(0.36, 0.66, 0.20);
-    let tipHighlight = vec3f(0.48, 0.74, 0.24);
-    m.albedo = mix(mix(baseGrass, lushGrass, macroNoise), tipHighlight, microNoise * 0.3);
-    m.roughness = 0.85;
-    m.subsurface = 0.40;
+    let envStyle = u.environmentStyle;
+    if (envStyle > 0.5 && envStyle < 1.5) {
+      // Courtyard Limestone Tile
+      let tileGrid = step(0.96, fract(p.x * 0.75)) + step(0.96, fract(p.z * 0.75));
+      let tileBase = mix(vec3f(0.86, 0.84, 0.80), vec3f(0.68, 0.66, 0.62), clamp(tileGrid, 0.0, 1.0));
+      m.albedo = tileBase;
+      m.roughness = 0.38;
+      m.metallic = 0.05;
+    } else if (envStyle >= 1.5 && envStyle < 2.5) {
+      // Warm Desert Sand
+      let sandRipple = sin(p.x * 8.0 + sin(p.z * 4.0)) * 0.08;
+      m.albedo = mix(vec3f(0.90, 0.68, 0.38), vec3f(0.82, 0.58, 0.28), sandRipple + 0.1);
+      m.roughness = 0.95;
+      m.subsurface = 0.25;
+    } else if (envStyle >= 2.5 && envStyle < 3.5) {
+      // Reflective Water
+      m.albedo = vec3f(0.04, 0.14, 0.26);
+      m.roughness = 0.06;
+      m.metallic = 0.15;
+    } else if (envStyle >= 3.5 && envStyle < 4.5) {
+      // Obsidian Void Mirror
+      m.albedo = vec3f(0.02, 0.02, 0.03);
+      m.roughness = 0.12;
+      m.metallic = 0.85;
+    } else if (envStyle >= 4.5) {
+      // Cyber / Alien Basalt with Neon Grid Veins
+      let grid = step(0.96, fract(p.x * 0.5)) + step(0.96, fract(p.z * 0.5));
+      m.albedo = vec3f(0.06, 0.05, 0.09);
+      m.roughness = 0.45;
+      m.emission = vec3f(0.0, 0.85, 1.0) * clamp(grid, 0.0, 1.0) * 2.2;
+    } else {
+      let macroNoise = fbm2D(p.xz * 1.5);
+      let microNoise = noise2D(p.xz * 18.0);
+      let baseGrass = vec3f(0.18, 0.48, 0.15);
+      let lushGrass = vec3f(0.36, 0.66, 0.20);
+      let tipHighlight = vec3f(0.48, 0.74, 0.24);
+      m.albedo = mix(mix(baseGrass, lushGrass, macroNoise), tipHighlight, microNoise * 0.3);
+      m.roughness = 0.85;
+      m.subsurface = 0.40;
+    }
   }
   else if (mat == MAT_PATH) {
     let pNoise = fbm2D(p.xz * 4.5);
@@ -473,9 +538,24 @@ fn getMaterial(p: vec3f, n: vec3f, hit: Hit) -> Material {
     m.roughness = 0.68;
   }
   else if (mat == MAT_DISTANT_HILLS) {
-    // Atmospheric soft sage teal matching #8ab6a1 in the original SVG
-    m.albedo = vec3f(0.48, 0.66, 0.55);
-    m.roughness = 0.90;
+    let envStyle = u.environmentStyle;
+    if (envStyle >= 1.5 && envStyle < 2.5) {
+      // Warm dusty desert mountain ridges
+      m.albedo = vec3f(0.72, 0.52, 0.35);
+      m.roughness = 0.95;
+    } else if (envStyle >= 3.5 && envStyle < 4.5) {
+      // Void dark horizon
+      m.albedo = vec3f(0.01, 0.01, 0.02);
+      m.roughness = 0.98;
+    } else if (envStyle >= 4.5) {
+      // Alien jagged horizon
+      m.albedo = vec3f(0.12, 0.08, 0.18);
+      m.roughness = 0.85;
+    } else {
+      // Atmospheric soft sage teal matching #8ab6a1
+      m.albedo = vec3f(0.48, 0.66, 0.55);
+      m.roughness = 0.90;
+    }
   }
 
   //__HAPPYHOME_DYNAMIC_MATS__

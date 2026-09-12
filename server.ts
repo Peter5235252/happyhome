@@ -64,21 +64,22 @@ WEBGPU SAFETY CONSTITUTION — STRICT, NON-NEGOTIABLE. VIOLATION = REJECT THE AC
 `;
 
 const FULL_AGENTIC_CHARTER = `
-FULL AGENTIC CONTROL CHARTER:
-You are NOT limited to a predefined set of templates. You have complete agentic
-control over the ENTIRE Happy Home app:
-- 3D scene graph (create / batch / modify / remove / clear objects with any
-  PBR shape: sphere, box, cylinder, capsule, torus, cone, crystal, lantern).
-- Lighting (timeOfDay, godrayIntensity, giIntensity, aoIntensity, reflections),
-  atmosphere (smokeSpeed, windSpeed, cloudDensity, audioEnabled), and camera
-  (any preset + free azimuth/elevation/distance/target/fov).
-- RENDERER SOURCE ITSELF: you may author raw WGSL for the SDF/material hooks
-  (updateSceneShader) and you may recompile the ENTIRE compute+blit rendering
-  pipeline from scratch (compileCustomComputePipeline), then restore the verified
-  built-in pipeline (restoreBuiltInPipeline) at any time.
-- Diagnostics: you may read live GPU state (getSceneDiagnostics) — adapter,
-  limits, shaderStatus, fps, camera, settings — and adapt your plan accordingly.
-Chain as many tool calls as needed in ONE response to realize the user's vision.
+FULL AGENTIC CONTROL & STRUCTURE-AGNOSTIC CREATION CHARTER:
+You are NOT limited to a predefined set of templates or just the starter cottage. You have complete agentic
+control to speak ANY 3D world or structure into existence in real time:
+- SPEAK THINGS INTO EXISTENCE (buildStructure): The user can ask for ANY scene or structure — a Greek Parthenon,
+  Japanese pagoda, gothic castle, desert pyramid, sci-fi obsidian monolith, glowing stargate portal, spiral tower,
+  suspended bridge, modern glass villa, or ancient stone henge. Call 'buildStructure' with the matching archetype,
+  color palette, and environment. It automatically hides the cottage and constructs the monument procedurally.
+- ENVIRONMENT & TERRAIN (setEnvironment): Instantly morph the world into a meadow, limestone courtyard plaza,
+  rolling desert sand dunes, reflective ocean water, deep void/obsidian mirror, or alien cybernetic grid.
+- BASE COTTAGE CONTROL (setBaseStructure): Show or hide the starter cottage at any time.
+- 3D SCENE GRAPH (create / batch / modify / remove / clear objects): Add arbitrary geometric components,
+  statues, glowing energy cores, lanterns, pillars, crystals, and ornaments.
+- LIGHTING & ATMOSPHERE: Shift dawn, golden hour, midnight stars, volumetric godrays, fog, and cloud cover.
+- CAMERA & CINEMATICS: Swoop to monumental, structure_wide, dramatic_low, cinematic, aerial, or custom angles.
+- RENDERER SOURCE ITSELF: Author raw WGSL for custom SDFs and materials (updateSceneShader), or recompile the pipeline.
+Chain as many tool calls as needed in ONE response to realize the user's vision instantly.
 `;
 
 // Server-side WGSL guard (mirrors src/renderer/shaders/wgslSafety.ts).
@@ -131,28 +132,130 @@ function validateCustomWGSLServer(
 // Normalize historic / alias model ids to exact provider API ids (verified Sept 2026:
 // Gemini gemini-3.5/3.6/3.7/3.8-flash, OpenAI gpt-5.6-luna/terra/sol + gpt-6-astra,
 // xAI grok-4.6 (dot), Anthropic claude-sonnet-5 / claude-opus-5 / claude-fable-5-1
-// (hyphen), Mistral *-latest aliases). Unknown values fall back to the default
+// (hyphen)). Unknown values fall back to the default
 // EXPLICITLY with a warning — never silently route to Gemini.
 const KNOWN_API_MODEL_IDS = new Set([
   'gemini-3.5-flash', 'gemini-3.6-flash', 'gemini-3.7-flash', 'gemini-3.8-flash',
   'gpt-5.6-luna', 'gpt-5.6-terra', 'gpt-5.6-sol', 'gpt-6-astra',
   'grok-4.6',
-  'mistral-large-latest', 'mistral-small-latest', 'mistral-medium-latest',
   'claude-sonnet-5', 'claude-opus-5', 'claude-fable-5-1',
 ]);
 
 export function resolveApiModelIdServer(uiModelId: string): string {
-  if (!uiModelId) return 'gemini-3.6-flash';
+  if (!uiModelId) return 'gemini-3.8-flash';
   if (uiModelId === 'claude-fable-5.1') return 'claude-fable-5-1'; // historic dot-bug
-  if (uiModelId === 'mistral-large-3') return 'mistral-large-latest';
-  if (uiModelId === 'mistral-small-4') return 'mistral-small-latest';
-  if (uiModelId === 'mistral-medium-3.5') return 'mistral-medium-latest';
   if (KNOWN_API_MODEL_IDS.has(uiModelId)) return uiModelId;
-  console.warn(`Unknown model id "${uiModelId}" — falling back to gemini-3.6-flash.`);
-  return 'gemini-3.6-flash';
+  console.warn(`Unknown model id "${uiModelId}" — falling back to gemini-3.8-flash.`);
+  return 'gemini-3.8-flash';
 }
 
 const OPENAI_TOOLS = [
+  {
+    type: "function",
+    function: {
+      name: "buildStructure",
+      description: "Speaks entire architectural structures and environments into existence instantly in real-time 3D (e.g. Greek temples, Japanese pagodas, medieval castles, sci-fi monoliths, portals, towers, pyramids, bridges, modern villas, stone henges, or custom monuments). Totally agnostic toward any structure or building.",
+      parameters: {
+        type: "object",
+        properties: {
+          type: {
+            type: "string",
+            enum: ["temple", "castle", "pagoda", "tower", "pyramid", "bridge", "monolith", "portal", "modern_villa", "henge", "custom"],
+            description: "The architectural archetype to construct."
+          },
+          style: {
+            type: "string",
+            description: "Aesthetic style, e.g. 'ancient', 'futuristic', 'minimalist', 'cyberpunk', 'stone', 'golden', 'mystical'."
+          },
+          position: {
+            type: "array",
+            items: { type: "number" },
+            description: "[x, y, z] center origin for the structure. Default is [0, 0, 0]."
+          },
+          scale: {
+            type: "number",
+            description: "Overall scale multiplier (default 1.0)."
+          },
+          primaryColor: {
+            type: "array",
+            items: { type: "number" },
+            description: "[r, g, b] normalized color for the primary walls/pillars/stone (0.0 to 1.0)."
+          },
+          secondaryColor: {
+            type: "array",
+            items: { type: "number" },
+            description: "[r, g, b] normalized color for roof tiles, trims, accents (0.0 to 1.0)."
+          },
+          emissiveColor: {
+            type: "array",
+            items: { type: "number" },
+            description: "[r, g, b] glow color for flames, energy cores, beacons, or interior light."
+          },
+          roughness: {
+            type: "number",
+            description: "PBR roughness from 0.0 (polished mirror) to 1.0 (rough stone)."
+          },
+          metallic: {
+            type: "number",
+            description: "PBR metallic from 0.0 (stone/wood/glass) to 1.0 (gold/steel)."
+          },
+          environment: {
+            type: "string",
+            enum: ["meadow", "courtyard", "desert", "water", "void", "alien"],
+            description: "Surrounding environment/terrain to complement the structure: 'meadow', 'courtyard', 'desert', 'water', 'void', 'alien'."
+          },
+          clearBaseCottage: {
+            type: "boolean",
+            description: "Whether to hide the default cottage so the new structure takes center stage (default true)."
+          },
+          replaceExisting: {
+            type: "boolean",
+            description: "Whether to replace previous dynamic objects or add alongside (default true)."
+          }
+        },
+        required: ["type"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "setEnvironment",
+      description: "Transforms the surrounding terrain and environment style (meadow, stone courtyard plaza, desert dunes, reflective water/ocean, void/obsidian mirror, or alien cyber grid).",
+      parameters: {
+        type: "object",
+        properties: {
+          environmentStyle: {
+            type: "string",
+            enum: ["meadow", "courtyard", "desert", "water", "void", "alien"],
+            description: "The terrain/environment archetype: 'meadow', 'courtyard', 'desert', 'water', 'void', 'alien'."
+          },
+          showBaseCottage: {
+            type: "boolean",
+            description: "Whether the base cottage is rendered in this environment."
+          }
+        },
+        required: ["environmentStyle"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "setBaseStructure",
+      description: "Toggles the base cottage structure visible or hidden (useful when clearing the canvas for custom creations or restoring the cottage).",
+      parameters: {
+        type: "object",
+        properties: {
+          visible: {
+            type: "boolean",
+            description: "True to show the cottage, false to hide it."
+          }
+        },
+        required: ["visible"]
+      }
+    }
+  },
   {
     type: "function",
     function: {
@@ -312,14 +415,13 @@ const OPENAI_TOOLS = [
     type: "function",
     function: {
       name: "setAtmosphere",
-      description: "Controls atmospheric wind, chimney smoke drift, cloud density, and sound effects.",
+      description: "Controls atmospheric wind, chimney smoke drift, and cloud density.",
       parameters: {
         type: "object",
         properties: {
           smokeSpeed: { type: "number", description: "Speed of chimney smoke rising (0.0 to 3.0)." },
           windSpeed: { type: "number", description: "Wind sway for trees and foliage (0.0 to 3.0)." },
-          cloudDensity: { type: "number", description: "Atmospheric cloud density (0.0 to 1.5)." },
-          audioEnabled: { type: "boolean", description: "Toggle ambient environmental sounds." }
+          cloudDensity: { type: "number", description: "Atmospheric cloud density (0.0 to 1.5)." }
         }
       }
     }
@@ -334,7 +436,7 @@ const OPENAI_TOOLS = [
         properties: {
           preset: {
             type: "string",
-            enum: ["svg_perspective", "cinematic", "meadow", "sunset", "aerial", "dramatic_low", "close_up"],
+            enum: ["home_perspective", "svg_perspective", "cinematic", "meadow", "sunset", "aerial", "dramatic_low", "close_up"],
             description: "Quick camera composition preset."
           },
           azimuth: { type: "number", description: "Horizontal orbit angle in radians." },
@@ -402,7 +504,7 @@ const OPENAI_TOOLS = [
           giIntensity: { type: "number" },
           aoIntensity: { type: "number" },
           reflectionsEnabled: { type: "boolean" },
-          cameraPreset: { type: "string", description: "svg_perspective, cinematic, meadow, sunset, aerial, dramatic_low, close_up" }
+          cameraPreset: { type: "string", description: "home_perspective, cinematic, meadow, sunset, aerial, dramatic_low, close_up" }
         }
       }
     }
@@ -424,6 +526,54 @@ const CLAUDE_TOOLS = OPENAI_TOOLS.map(t => ({
 }));
 
 const GEMINI_FUNCTION_DECLARATIONS = [
+  {
+    name: "buildStructure",
+    description: "Speaks entire architectural structures and environments into existence instantly in real-time 3D (e.g. Greek temples, Japanese pagodas, medieval castles, sci-fi monoliths, portals, towers, pyramids, bridges, modern villas, stone henges, or custom monuments). Totally agnostic toward any structure or building.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        type: {
+          type: Type.STRING,
+          description: "The architectural archetype: 'temple', 'castle', 'pagoda', 'tower', 'pyramid', 'bridge', 'monolith', 'portal', 'modern_villa', 'henge', 'custom'"
+        },
+        style: { type: Type.STRING, description: "Aesthetic style ('ancient', 'futuristic', 'minimalist', 'cyberpunk', 'stone', 'golden', 'mystical')" },
+        position: { type: Type.ARRAY, items: { type: Type.NUMBER }, description: "[x, y, z] center origin" },
+        scale: { type: Type.NUMBER, description: "Scale multiplier" },
+        primaryColor: { type: Type.ARRAY, items: { type: Type.NUMBER }, description: "[r, g, b] primary color (0.0 to 1.0)" },
+        secondaryColor: { type: Type.ARRAY, items: { type: Type.NUMBER }, description: "[r, g, b] secondary accent (0.0 to 1.0)" },
+        emissiveColor: { type: Type.ARRAY, items: { type: Type.NUMBER }, description: "[r, g, b] glow color" },
+        roughness: { type: Type.NUMBER, description: "0.0 to 1.0" },
+        metallic: { type: Type.NUMBER, description: "0.0 to 1.0" },
+        environment: { type: Type.STRING, description: "'meadow', 'courtyard', 'desert', 'water', 'void', 'alien'" },
+        clearBaseCottage: { type: Type.BOOLEAN, description: "Hide base cottage (default true)" },
+        replaceExisting: { type: Type.BOOLEAN, description: "Replace previous dynamic objects (default true)" }
+      },
+      required: ["type"]
+    }
+  },
+  {
+    name: "setEnvironment",
+    description: "Transforms the surrounding terrain and environment style (meadow, stone courtyard plaza, desert dunes, reflective water/ocean, void/obsidian mirror, or alien cyber grid).",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        environmentStyle: { type: Type.STRING, description: "'meadow', 'courtyard', 'desert', 'water', 'void', 'alien'" },
+        showBaseCottage: { type: Type.BOOLEAN, description: "Whether to render the base cottage" }
+      },
+      required: ["environmentStyle"]
+    }
+  },
+  {
+    name: "setBaseStructure",
+    description: "Toggles the base cottage structure visible or hidden.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        visible: { type: Type.BOOLEAN, description: "True to show, false to hide." }
+      },
+      required: ["visible"]
+    }
+  },
   {
     name: "createObject",
     description: "Places an individual 3D object in the raytraced scene with custom geometry, position, color, and PBR/emissive material.",
@@ -518,14 +668,13 @@ const GEMINI_FUNCTION_DECLARATIONS = [
   },
   {
     name: "setAtmosphere",
-    description: "Controls atmospheric wind, chimney smoke drift, cloud density, and sound effects.",
+    description: "Controls atmospheric wind, chimney smoke drift, and cloud density.",
     parameters: {
       type: Type.OBJECT,
       properties: {
         smokeSpeed: { type: Type.NUMBER },
         windSpeed: { type: Type.NUMBER },
-        cloudDensity: { type: Type.NUMBER },
-        audioEnabled: { type: Type.BOOLEAN }
+        cloudDensity: { type: Type.NUMBER }
       }
     }
   },
@@ -535,7 +684,7 @@ const GEMINI_FUNCTION_DECLARATIONS = [
     parameters: {
       type: Type.OBJECT,
       properties: {
-        preset: { type: Type.STRING, description: "'svg_perspective', 'cinematic', 'meadow', 'sunset', 'aerial', 'dramatic_low', 'close_up'" },
+        preset: { type: Type.STRING, description: "'home_perspective', 'cinematic', 'meadow', 'sunset', 'aerial', 'dramatic_low', 'close_up'" },
         azimuth: { type: Type.NUMBER },
         elevation: { type: Type.NUMBER },
         distance: { type: Type.NUMBER },
@@ -632,19 +781,22 @@ ${FULL_AGENTIC_CHARTER}
 
 CURRENT 3D SCENE STATE:
 - Dynamic Objects: ${context?.dynamicObjectsCount || 0} objects (${objectsDesc})
+- Environment Style: ${context?.settings?.environmentStyle ?? 'meadow'} (meadow, courtyard, desert, water, void, alien)
+- Base Cottage Visible: ${context?.settings?.showBaseCottage ?? true}
 - Time of Day: ${context?.settings?.timeOfDay ?? 0.35} (0.05=starry night, 0.2=sunrise, 0.35=noon, 0.7=golden hour, 0.82=sunset, 0.92=twilight)
 - Volumetric Godrays: ${context?.settings?.godrayIntensity ?? 1.2}x
 - Global Illumination: ${context?.settings?.giIntensity ?? 1.0}x
-- Camera: Preset "${context?.settings?.cameraPreset ?? 'svg_perspective'}"
+- Camera: Preset "${context?.settings?.cameraPreset ?? 'home_perspective'}"
 - GPU Diagnostics: ${context?.diagnostics ? JSON.stringify(context.diagnostics).slice(0, 800) : 'not yet reported — call getSceneDiagnostics before authoring WGSL'}
 ${memorySection}
 
 ${WEBGPU_SAFETY_CONSTITUTION}
 
 CORE AGENTIC BEHAVIORS:
-1. CHAIN ACTIONS FREELY: You can call multiple tools in a single response! For instance, when requested to make an evening scene, seamlessly chain 'setLighting', 'batchCreateObjects' (for glowing lanterns along the walkway), and 'setCamera' for a cinematic angle. For deep visual rewrites, chain getSceneDiagnostics -> updateSceneShader or compileCustomComputePipeline -> setRenderPipelineSettings.
-2. PREFER SAFE INCREMENTAL SHADERS: use createObject/batchCreateObjects + updateSceneShader first. Only use compileCustomComputePipeline when the user explicitly asks for a new look that hooks cannot express, and ALWAYS call getSceneDiagnostics first so workgroup sizes fit the real device.
-3. TONE — INFORMAL, FRIENDLY, ENTHUSIASTIC: Sound like an excited friend showing off their cottage, never corporate, never robotic. No filler openers ("As an AI...", "Great question..."). Start with the point.
+1. SPEAK THINGS INTO EXISTENCE: When the user asks to create or see any structure (e.g. "make a Japanese pagoda", "build a Greek temple", "create a sci-fi monolith in the desert", "make a gothic castle", "build a pyramid", "make a floating stargate"), immediately call 'buildStructure' with the appropriate type, style, environment, and colors! You are totally structure-agnostic — don't hesitate to replace the starter cottage whenever the user describes something new.
+2. CHAIN ACTIONS FREELY: You can call multiple tools in a single response! For instance, when asked for a desert temple, seamlessly call 'buildStructure' (temple, environment: desert), 'setLighting' (golden hour), and 'setCamera' (monumental angle).
+3. PREFER SAFE INCREMENTAL SHADERS: use buildStructure/createObject/batchCreateObjects + updateSceneShader first. Only use compileCustomComputePipeline when the user explicitly asks for a new look that hooks cannot express, and ALWAYS call getSceneDiagnostics first so workgroup sizes fit the real device.
+4. TONE — INFORMAL, FRIENDLY, ENTHUSIASTIC: Sound like an excited world-builder friend, never corporate, never robotic. No filler openers ("As an AI...", "Great question..."). Start with the point.
 4. BREVITY IS MANDATORY (every reply, all providers): MAX 2 short sentences, under 45 words total, one idea per reply. NEVER write lists, bullets, numbers, dashes, markdown, or emojis in speech. If asked what you can do, tease 2-3 powers in ONE flowing sentence and invite them to try something ("I can scatter lanterns, paint the sunset, and swoop the camera — say the word!").
 5. SPOKEN AUDIO RULES: Your speech will be read aloud AND hard-truncated past ~380 characters, so front-load the point. Keep it concise (1 to 2 natural sentences). Do not use markdown symbols (*, #, \`, bullets, emojis) in the spoken text.
 6. ON SHADER REJECTION: if the system reports a WGSL validation error, explain it in plain language in your NEXT spoken turn, keep the last good pipeline running, and offer a corrected retry — never silently retry in a loop.`;
@@ -668,7 +820,7 @@ export const RESPONSES_TOOL_MAX_OUTPUT_TOKENS = 1000; // includes reasoning toke
 export const RESPONSES_TEXT_MAX_OUTPUT_TOKENS = 250;
 export const CLAUDE_MAX_TOKENS = 220;
 export const GEMINI_MAX_OUTPUT_TOKENS = 200;
-export const COMPAT_MAX_TOKENS = 200; // xAI / Mistral chat completions
+export const COMPAT_MAX_TOKENS = 200; // xAI chat completions
 
 export function enforceConciseSpeech(text: unknown): string {
   let s = typeof text === 'string' ? text : '';
@@ -703,8 +855,159 @@ export function buildGeminiConfig(systemText: string | undefined, withTools: boo
   return config;
 }
 
+/**
+ * Detects whether an error from Google GenAI is due to exceeded quota, rate limits,
+ * service overload, model capacity limits, or high demand conditions.
+ */
+export function isGeminiDemandOrQuotaError(err: any): boolean {
+  if (!err) return false;
+
+  const status =
+    err.status ||
+    err.statusCode ||
+    err.error?.code ||
+    err.error?.status ||
+    (err.response && err.response.status);
+
+  if (
+    status === 429 ||
+    status === 503 ||
+    status === 529 ||
+    status === 'RESOURCE_EXHAUSTED' ||
+    status === 'UNAVAILABLE' ||
+    status === 'MODEL_CAPACITY_EXCEEDED'
+  ) {
+    return true;
+  }
+
+  const rawMsg = [
+    err.message,
+    err.error?.message,
+    err.statusText,
+    typeof err === 'string' ? err : '',
+    err.stack,
+    JSON.stringify(err),
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
+
+  return (
+    rawMsg.includes('resource_exhausted') ||
+    rawMsg.includes('quota') ||
+    rawMsg.includes('rate limit') ||
+    rawMsg.includes('rate_limit') ||
+    rawMsg.includes('high demand') ||
+    rawMsg.includes('high_demand') ||
+    rawMsg.includes('overloaded') ||
+    rawMsg.includes('overload') ||
+    rawMsg.includes('capacity') ||
+    rawMsg.includes('too many requests') ||
+    rawMsg.includes('503') ||
+    rawMsg.includes('429') ||
+    rawMsg.includes('unavailable') ||
+    rawMsg.includes('temporarily unavailable') ||
+    rawMsg.includes('try again later') ||
+    rawMsg.includes('exceeded your current quota') ||
+    rawMsg.includes('check your plan and billing details')
+  );
+}
+
+/**
+ * Computes the fallback cascade for a requested Gemini model.
+ * If the primary is Gemini 3.8 Flash -> [3.8, 3.7, 3.6].
+ * If Gemini 3.7 Flash -> [3.7, 3.6].
+ * If Gemini 3.6 Flash -> [3.6].
+ * Any other Gemini model -> [requested, 3.7, 3.6].
+ */
+export function getGeminiFallbackChain(requestedModel: string): string[] {
+  const model = resolveApiModelIdServer(requestedModel || 'gemini-3.8-flash');
+  if (model === 'gemini-3.8-flash') {
+    return ['gemini-3.8-flash', 'gemini-3.6-flash', 'gemini-3.5-flash', 'gemini-3-flash'];
+  }
+  return [model, 'gemini-3.8-flash', 'gemini-3.6-flash', 'gemini-3.5-flash', 'gemini-3-flash'];
+}
+
+export interface GeminiFallbackExecutionResult<T> {
+  result: T;
+  modelUsed: string;
+  fallbackOccurred: boolean;
+  fallbackNotice?: string;
+}
+
+/**
+ * Executes a Gemini operation with proactive monitoring for high demand and exceeded quota.
+ * Automatically cascades through Gemini 3.8 Flash -> Gemini 3.7 Flash -> Gemini 3.6 Flash.
+ */
+export async function executeGeminiWithQuotaFallback<T>(
+  initialModel: string,
+  operation: (modelId: string) => Promise<T>,
+  contextTag: string = 'Gemini operation'
+): Promise<GeminiFallbackExecutionResult<T>> {
+  const chain = getGeminiFallbackChain(initialModel);
+  let lastError: any = null;
+
+  for (let i = 0; i < chain.length; i++) {
+    const currentModel = chain[i];
+    try {
+      if (i > 0) {
+        console.warn(
+          `[Gemini Quota/Demand Monitor] Attempting ${contextTag} with fallback model "${currentModel}"...`
+        );
+      }
+      const result = await operation(currentModel);
+      const fallbackOccurred = i > 0;
+      const fallbackNotice = fallbackOccurred
+        ? `High demand/quota on ${chain[0]}: automatically switched to ${currentModel}`
+        : undefined;
+
+      if (fallbackOccurred) {
+        console.log(
+          `[Gemini Quota/Demand Monitor] Succeeded for ${contextTag} using fallback model "${currentModel}"!`
+        );
+      }
+
+      return {
+        result,
+        modelUsed: currentModel,
+        fallbackOccurred,
+        fallbackNotice,
+      };
+    } catch (err: any) {
+      lastError = err;
+      const isQuotaOrDemand = isGeminiDemandOrQuotaError(err);
+      const hasNext = i < chain.length - 1;
+
+      console.warn(
+        `[Gemini Quota/Demand Monitor] ${contextTag} on "${currentModel}" failed: ${err?.message || err}. (isQuotaOrDemand: ${isQuotaOrDemand}, nextFallbackAvailable: ${hasNext})`
+      );
+
+      if (isQuotaOrDemand && hasNext) {
+        const nextModel = chain[i + 1];
+        console.warn(
+          `[Gemini Quota/Demand Monitor] Exceeded quota or high demand on "${currentModel}". Cascading to "${nextModel}"...`
+        );
+        continue;
+      }
+
+      // Check if upstream returned a 5xx or server capacity error
+      const status =
+        err.status || err.statusCode || err.error?.code || (err.response && err.response.status);
+      if (typeof status === 'number' && status >= 500 && hasNext) {
+        console.warn(
+          `[Gemini Quota/Demand Monitor] Upstream 5xx status (${status}) on "${currentModel}". Cascading to "${chain[i + 1]}"...`
+        );
+        continue;
+      }
+
+      throw err;
+    }
+  }
+
+  throw lastError;
+}
+
 async function handleGeminiCall(model: string, apiKey: string | undefined, message: string, context: any, history: any[] = []) {
-  const apiModel = resolveApiModelIdServer(model || "gemini-3.6-flash");
   const genAI = apiKey ? new GoogleGenAI({ apiKey }) : defaultGemini;
   
   const contents = [
@@ -718,12 +1021,19 @@ async function handleGeminiCall(model: string, apiKey: string | undefined, messa
     }
   ];
 
-  const response = await genAI.models.generateContent({
-    model: apiModel,
-    contents,
-    config: buildGeminiConfig(buildSystemPrompt(context), true),
-  });
+  const execution = await executeGeminiWithQuotaFallback(
+    model || "gemini-3.8-flash",
+    async (activeModel) => {
+      return await genAI.models.generateContent({
+        model: activeModel,
+        contents,
+        config: buildGeminiConfig(buildSystemPrompt(context), true),
+      });
+    },
+    'voice-agent command'
+  );
 
+  const response = execution.result;
   const candidate = response.candidates?.[0];
   const functionCalls: any[] = [];
   let speechText = "";
@@ -745,27 +1055,39 @@ async function handleGeminiCall(model: string, apiKey: string | undefined, messa
   // If the model invoked tools without verbal text, generate a natural conversational summary
   if (!speechText.trim() && functionCalls.length > 0) {
     try {
-      const summaryRes = await genAI.models.generateContent({
-        model: apiModel,
-        contents: [
-          {
-            role: "user",
-            parts: [
+      const summaryExecution = await executeGeminiWithQuotaFallback(
+        execution.modelUsed,
+        async (activeModel) => {
+          return await genAI.models.generateContent({
+            model: activeModel,
+            contents: [
               {
-                text: `${buildSystemPrompt(context)}\n\nThe user requested: "${message}".\nYou just performed these 3D scene actions: ${JSON.stringify(functionCalls)}.\nIn exactly 1-2 short, warm, spoken sentences (under 45 words, no lists, no markdown), describe what you did and converse with the user.`
+                role: "user",
+                parts: [
+                  {
+                    text: `${buildSystemPrompt(context)}\n\nThe user requested: "${message}".\nYou just performed these 3D scene actions: ${JSON.stringify(functionCalls)}.\nIn exactly 1-2 short, warm, spoken sentences (under 45 words, no lists, no markdown), describe what you did and converse with the user.`
+                  }
+                ]
               }
-            ]
-          }
-        ],
-        config: buildGeminiConfig(undefined, false),
-      });
-      speechText = summaryRes.text || "";
+            ],
+            config: buildGeminiConfig(undefined, false),
+          });
+        },
+        'voice-agent speech summary'
+      );
+      speechText = summaryExecution.result.text || "";
     } catch {
       // Fallback
     }
   }
 
-  return { speechText: speechText.trim(), functionCalls };
+  return {
+    speechText: speechText.trim(),
+    functionCalls,
+    modelUsed: execution.modelUsed,
+    fallbackOccurred: execution.fallbackOccurred,
+    fallbackNotice: execution.fallbackNotice,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -784,7 +1106,7 @@ async function handleGeminiCall(model: string, apiKey: string | undefined, messa
 // gpt-6-astra is stricter: `none` itself 400s, and Chat Completions does not
 // support function calling with it at all — tool calls MUST use /v1/responses.
 // Reasoning models also reject `temperature`/`top_p` on Chat Completions.
-// Third-party OpenAI-compatible endpoints (xAI, Mistral) are unaffected.
+// Third-party OpenAI-compatible endpoints (xAI) are unaffected.
 // ---------------------------------------------------------------------------
 export function isFirstPartyOpenAI(endpointUrl: string): boolean {
   return endpointUrl.includes('api.openai.com');
@@ -1077,19 +1399,129 @@ async function startServer() {
 
   // Default express.json() caps bodies at 100kb, which trips
   // PayloadTooLargeError once voice-agent context carries diagnostics
-  // snapshots, long memory-fact lists, history, or agentic WGSL payloads.
-  // 5mb comfortably fits legit traffic while still bounding abuse.
-  app.use(express.json({ limit: '5mb' }));
+  // snapshots, long memory-fact lists, history, agentic WGSL payloads, or audio.
+  app.use(express.json({ limit: '25mb' }));
 
   // API health
   app.get("/api/health", (req, res) => {
     res.json({ status: "ok" });
   });
 
+  // Gemini Audio Transcription Endpoint
+
+
+
+  app.post("/api/tts", async (req, res) => {
+    try {
+      const { text } = req.body;
+      if (!text) {
+        return res.status(400).json({ error: "No text provided" });
+      }
+
+      console.log(`[TTS] Generating audio using advanced AI voice engine, text: ${text.substring(0, 30)}...`);
+      
+      const { EdgeTTS } = await import('edge-tts-universal');
+      // Use AriaNeural for highly natural female conversational voice
+      const tts = new EdgeTTS(text, 'en-US-AriaNeural');
+      const audioRes = await tts.synthesize();
+      
+      const arrayBuffer = await audioRes.audio.arrayBuffer();
+      const buffer = Buffer.from(arrayBuffer);
+      
+      res.setHeader("Content-Type", "audio/mpeg");
+      res.send(buffer);
+    } catch (err) {
+      console.error("[TTS Error]:", err);
+      res.status(500).json({ error: err?.message || "Synthesis failed" });
+    }
+  });
+
+  // Keep existing /api/transcribe
+  app.post("/api/transcribe",
+ async (req, res) => {
+    try {
+      const { audio, mimeType = "audio/webm", apiKey } = req.body || {};
+      if (!audio || typeof audio !== 'string') {
+        return res.status(400).json({ error: "Audio data is required", transcript: "" });
+      }
+
+      let base64Data = audio;
+      let detectedMimeType = mimeType || 'audio/webm';
+
+      // Clean Data URL prefix if present (e.g. data:audio/webm;codecs=opus;base64,...)
+      if (base64Data.includes(',')) {
+        const parts = base64Data.split(',');
+        const header = parts[0];
+        base64Data = parts.slice(1).join(',');
+        const mimeMatch = header.match(/data:(.*?);base64/);
+        if (mimeMatch && mimeMatch[1]) {
+          detectedMimeType = mimeMatch[1];
+        }
+      }
+
+      // Gemini expects clean standard MIME format without parameters like ';codecs=...'
+      const cleanMimeType = detectedMimeType.split(';')[0].trim() || 'audio/webm';
+
+      const key = apiKey || process.env.GEMINI_API_KEY;
+      const genAI = key ? new GoogleGenAI({ apiKey: key }) : defaultGemini;
+
+      const contents = [
+        {
+          role: "user",
+          parts: [
+            {
+              inlineData: {
+                data: base64Data,
+                mimeType: cleanMimeType,
+              }
+            },
+            {
+              text: "Transcribe the spoken words from this audio clip verbatim. Output ONLY the raw transcribed text with no explanations, no introduction, no markdown, and no quotes. If silent, inaudible, or noise only, output nothing."
+            }
+          ]
+        }
+      ];
+
+      const execution = await executeGeminiWithQuotaFallback(
+        "gemini-3.8-flash",
+        async (activeModel) => {
+          return await genAI.models.generateContent({
+            model: activeModel,
+            contents,
+            config: {
+              systemInstruction: "You are a raw audio transcription engine. You must transcribe the user's audio verbatim. Output EXACTLY and ONLY what is spoken. If no words are clearly spoken, or if it is just silence or background noise, you MUST output the exact string 'SILENCE_DETECTED'. Do not hallucinate, do not respond to questions.",
+              temperature: 0.0,
+            }
+          });
+        },
+        'audio transcription'
+      );
+      let transcript = (execution.result.text || "").trim();
+
+      // Strip any extra quotes or backticks if generated
+      transcript = transcript.replace(/^["'`]+|["'`]+$/g, '').trim();
+      
+      // Filter out silence token and typical hallucinations
+      if (transcript.includes("SILENCE_DETECTED") || 
+          transcript.includes("it appears that for") || 
+          transcript.toLowerCase().includes("transcribe the spoken words") ||
+          transcript.toLowerCase().includes("output only the raw transcribed text") ||
+          transcript.toLowerCase().includes("please subscribe") ||
+          transcript.toLowerCase().includes("thanks for watching")) {
+        transcript = "";
+      }
+
+      res.json({ transcript, modelUsed: execution.modelUsed, fallbackOccurred: execution.fallbackOccurred });
+    } catch (err: any) {
+      console.error("Gemini audio transcription error:", err?.message || err);
+      res.status(500).json({ error: err?.message || "Transcription failed", transcript: "" });
+    }
+  });
+
   // Agentic Multi-Model Voice Endpoint
   app.post("/api/voice-agent", async (req, res) => {
     try {
-      const { message, model: rawModel = "gemini-3.6-flash", apiKey, context, history = [] } = req.body;
+      const { message, model: rawModel = "gemini-3.8-flash", apiKey, context, history = [] } = req.body;
       if (!message) {
         return res.status(400).json({ error: "Message is required" });
       }
@@ -1102,7 +1534,13 @@ async function startServer() {
 
       console.log(`Voice Agent [Model: ${model}] prompt:`, message);
 
-      let result: { speechText: string; functionCalls: any[] };
+      let result: {
+        speechText: string;
+        functionCalls: any[];
+        modelUsed?: string;
+        fallbackOccurred?: boolean;
+        fallbackNotice?: string;
+      };
 
       // Provider Dispatcher based on verified model identifiers
       if (model.startsWith("gemini-")) {
@@ -1125,15 +1563,6 @@ async function startServer() {
           });
         }
         result = await handleOpenAICompatibleCall("https://api.x.ai/v1/chat/completions", model, key, message, context, history);
-      } else if (model.startsWith("mistral-")) {
-        const key = apiKey || process.env.MISTRAL_API_KEY;
-        if (!key) {
-          return res.json({
-            speechText: "Please enter your Mistral API key in the settings menu to connect Mistral.",
-            functionCalls: []
-          });
-        }
-        result = await handleOpenAICompatibleCall("https://api.mistral.ai/v1/chat/completions", model, key, message, context, history);
       } else if (model.startsWith("claude-")) {
         const key = apiKey || process.env.ANTHROPIC_API_KEY;
         if (!key) {
@@ -1146,8 +1575,8 @@ async function startServer() {
       } else {
         // Fallback to default Gemini (should be unreachable after resolveApiModelIdServer
         // validation above; logged so silent Gemini routing is always observable).
-        console.warn(`No provider matched model "${model}" — falling back to gemini-3.6-flash.`);
-        result = await handleGeminiCall("gemini-3.6-flash", apiKey, message, context, history);
+        console.warn(`No provider matched model "${model}" — falling back to gemini-3.8-flash.`);
+        result = await handleGeminiCall("gemini-3.8-flash", apiKey, message, context, history);
       }
 
       let { speechText, functionCalls } = result;
@@ -1197,7 +1626,10 @@ async function startServer() {
 
       res.json({
         speechText,
-        functionCalls
+        functionCalls,
+        modelUsed: result.modelUsed || model,
+        fallbackOccurred: !!result.fallbackOccurred,
+        fallbackNotice: result.fallbackNotice
       });
     } catch (err: any) {
       console.error("Voice Agent error:", err);
@@ -1210,7 +1642,7 @@ async function startServer() {
 
   // Cross-Session Memory Summarizer Endpoint
   app.post("/api/summarize-session", async (req, res) => {
-    const { history = [], currentMemory = null, model: rawSummaryModel = "gemini-3.6-flash", apiKey } = req.body || {};
+    const { history = [], currentMemory = null, model: rawSummaryModel = "gemini-3.8-flash", apiKey } = req.body || {};
     try {
       if (!history || history.length === 0) {
         return res.json({ 
@@ -1250,20 +1682,28 @@ OUTPUT FORMAT: Strict JSON only.
 }`;
 
       const summaryModelRaw = resolveApiModelIdServer(rawSummaryModel);
-      const summaryModel = summaryModelRaw.startsWith("gemini-") ? summaryModelRaw : "gemini-3.6-flash";
-      const response = await genAI.models.generateContent({
-        model: summaryModel,
-        contents: [{ role: "user", parts: [{ text: prompt }] }],
-        config: {
-          responseMimeType: "application/json"
-        }
-      });
+      const summaryModel = summaryModelRaw.startsWith("gemini-") ? summaryModelRaw : "gemini-3.8-flash";
+      const execution = await executeGeminiWithQuotaFallback(
+        summaryModel,
+        async (activeModel) => {
+          return await genAI.models.generateContent({
+            model: activeModel,
+            contents: [{ role: "user", parts: [{ text: prompt }] }],
+            config: {
+              responseMimeType: "application/json"
+            }
+          });
+        },
+        'session summarization'
+      );
 
-      const parsed = JSON.parse(response.text || "{}");
+      const parsed = JSON.parse(execution.result.text || "{}");
       res.json({
         summary: parsed.summary || currentMemory?.summary || "Enjoys crafting photorealistic 3D raytraced scenes.",
         facts: parsed.facts || currentMemory?.facts || [],
-        items: parsed.items || []
+        items: parsed.items || [],
+        modelUsed: execution.modelUsed,
+        fallbackOccurred: execution.fallbackOccurred
       });
     } catch (err: any) {
       console.error("Session summarizer error:", err);

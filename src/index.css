@@ -60,3 +60,124 @@
   backface-visibility: hidden;
   -webkit-backface-visibility: hidden;
 }
+
+/* Smooth, gentle thinking color shifting across the AI frosted glass UI */
+@keyframes thinking-glass-container-shift {
+  0%, 100% {
+    background-color: rgba(12, 19, 28, 0.65);
+    border-color: rgba(96, 165, 250, 0.25);
+    box-shadow: 0 0 35px -5px rgba(96, 165, 250, 0.12), 0 16px 36px -8px rgba(0, 0, 0, 0.65);
+  }
+  25% {
+    background-color: rgba(16, 17, 30, 0.65);
+    border-color: rgba(147, 155, 255, 0.25);
+    box-shadow: 0 0 35px -5px rgba(147, 155, 255, 0.12), 0 16px 36px -8px rgba(0, 0, 0, 0.65);
+  }
+  50% {
+    background-color: rgba(21, 16, 28, 0.65);
+    border-color: rgba(196, 149, 252, 0.25);
+    box-shadow: 0 0 35px -5px rgba(196, 149, 252, 0.12), 0 16px 36px -8px rgba(0, 0, 0, 0.65);
+  }
+  75% {
+    background-color: rgba(12, 22, 23, 0.65);
+    border-color: rgba(74, 222, 188, 0.25);
+    box-shadow: 0 0 35px -5px rgba(74, 222, 188, 0.12), 0 16px 36px -8px rgba(0, 0, 0, 0.65);
+  }
+}
+
+@keyframes thinking-inner-gentle {
+  0%, 100% {
+    border-color: rgba(96, 165, 250, 0.20);
+    background-color: rgba(96, 165, 250, 0.04);
+  }
+  25% {
+    border-color: rgba(147, 155, 255, 0.20);
+    background-color: rgba(147, 155, 255, 0.04);
+  }
+  50% {
+    border-color: rgba(196, 149, 252, 0.20);
+    background-color: rgba(196, 149, 252, 0.04);
+  }
+  75% {
+    border-color: rgba(74, 222, 188, 0.20);
+    background-color: rgba(74, 222, 188, 0.04);
+  }
+}
+
+@keyframes thinking-button-gentle {
+  0%, 100% {
+    border-color: rgba(96, 165, 250, 0.25);
+    background-color: rgba(96, 165, 250, 0.08);
+    color: rgb(147, 197, 253);
+  }
+  25% {
+    border-color: rgba(147, 155, 255, 0.25);
+    background-color: rgba(147, 155, 255, 0.08);
+    color: rgb(165, 180, 252);
+  }
+  50% {
+    border-color: rgba(196, 149, 252, 0.25);
+    background-color: rgba(196, 149, 252, 0.08);
+    color: rgb(216, 180, 254);
+  }
+  75% {
+    border-color: rgba(74, 222, 188, 0.25);
+    background-color: rgba(74, 222, 188, 0.08);
+    color: rgb(110, 231, 183);
+  }
+}
+
+@keyframes thinking-dot-gentle {
+  0%, 100% {
+    background-color: rgb(147, 197, 253);
+    box-shadow: 0 0 5px rgba(147, 197, 253, 0.45);
+  }
+  25% {
+    background-color: rgb(165, 180, 252);
+    box-shadow: 0 0 5px rgba(165, 180, 252, 0.45);
+  }
+  50% {
+    background-color: rgb(216, 180, 254);
+    box-shadow: 0 0 5px rgba(216, 180, 254, 0.45);
+  }
+  75% {
+    background-color: rgb(110, 231, 183);
+    box-shadow: 0 0 5px rgba(110, 231, 183, 0.45);
+  }
+}
+
+@keyframes thinking-text-gentle {
+  0%, 100% {
+    color: rgb(191, 219, 254);
+  }
+  25% {
+    color: rgb(199, 210, 254);
+  }
+  50% {
+    color: rgb(233, 213, 255);
+  }
+  75% {
+    color: rgb(167, 243, 208);
+  }
+}
+
+.thinking-glass-container {
+  animation: thinking-glass-container-shift 8s ease-in-out infinite;
+}
+
+.thinking-inner-shift {
+  animation: thinking-inner-gentle 8s ease-in-out infinite;
+}
+
+.thinking-button-shift {
+  border-width: 1px;
+  animation: thinking-button-gentle 8s ease-in-out infinite;
+}
+
+.thinking-dot-shift {
+  animation: thinking-dot-gentle 8s ease-in-out infinite;
+}
+
+.thinking-text-shift {
+  animation: thinking-text-gentle 8s ease-in-out infinite;
+}

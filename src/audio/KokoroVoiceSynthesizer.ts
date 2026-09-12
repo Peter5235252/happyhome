@@ -27,6 +27,8 @@ export interface VoiceSynthesizerOptions {
   pitch?: number;
   /** Gain 0.0–1.0. Default 1.0. */
   volume?: number;
+  /** API Key (required for external engines like GPT-Live) */
+  apiKey?: string;
   onStart?: () => void;
   onEnd?: () => void;
   onError?: (err: any) => void;
@@ -45,6 +47,7 @@ export const VOICE_OPTIONS: TtsVoiceOption[] = [
   { id: 'am_adam', label: 'Adam — natural male' },
   { id: 'am_michael', label: 'Michael — deep male' },
   { id: 'bf_emma', label: 'Emma — warm British female' },
+  { id: 'gpt_live', label: 'GPT-Live — full duplex API' },
 ];
 
 export const DEFAULT_VOICE_ID = 'af_heart';
@@ -84,6 +87,7 @@ export class KokoroVoiceSynthesizer {
   private playResolvers: Set<() => void> = new Set();
   private genToken = 0;
   private isSpeaking = false;
+  private nextStartTime = 0;
 
   // Single-flight streamed playback state for the current speak().
   // waiters is a SET (not one slot): back-to-back speak() calls must wake
@@ -199,8 +203,9 @@ export class KokoroVoiceSynthesizer {
     return this.audioCtx;
   }
 
-  private playChunk(data: Float32Array, sampleRate: number, volume: number): Promise<void> {
-    return new Promise((resolve) => {
+  private playChunk(data: Float32Array, sampleRate: number, volume: number): { duration: number, promise: Promise<void> } {
+    let duration = 0;
+    const promise = new Promise<void>((resolve) => {
       const ctx = this.audioCtx;
       const out = this.gainNode;
       if (!ctx || !out) {
@@ -209,6 +214,7 @@ export class KokoroVoiceSynthesizer {
       }
       try {
         const buffer = ctx.createBuffer(1, data.length, sampleRate);
+        duration = buffer.duration;
         buffer.getChannelData(0).set(data);
         const src = ctx.createBufferSource();
         src.buffer = buffer;
@@ -233,11 +239,20 @@ export class KokoroVoiceSynthesizer {
         this.playResolvers.add(done);
         this.activeSources.add(src);
         src.onended = done;
-        src.start();
+        
+        let startTime = ctx.currentTime;
+        if (this.nextStartTime < startTime) {
+          this.nextStartTime = startTime;
+        } else {
+          startTime = this.nextStartTime;
+        }
+        src.start(startTime);
+        this.nextStartTime = startTime + duration;
       } catch {
         resolve();
       }
     });
+    return { duration, promise };
   }
 
   private waitForChunk(): Promise<void> {
@@ -284,6 +299,11 @@ export class KokoroVoiceSynthesizer {
       this.stopInternal();
       this.wakeAll();
 
+      if (this.voiceId === 'gpt_live') {
+        this.speakGptLive(cleaned, myToken, alive, options, resolve);
+        return;
+      }
+
       const worker = this.ensureWorker();
       if (!worker) {
         try {
@@ -328,6 +348,7 @@ export class KokoroVoiceSynthesizer {
 
       void (async () => {
         try {
+          let lastPromise: Promise<void> | null = null;
           for (;;) {
             if (!alive()) return; // interrupted: drop everything
             const next = this.pendingChunks.shift();
@@ -339,7 +360,8 @@ export class KokoroVoiceSynthesizer {
                   options.onStart?.();
                 } catch {}
               }
-              await this.playChunk(next.pcm, next.sampleRate, volume);
+              const result = this.playChunk(next.pcm, next.sampleRate, volume);
+              lastPromise = result.promise;
               continue;
             }
             if (this.streamError) throw new Error(String(this.streamError));
@@ -347,6 +369,7 @@ export class KokoroVoiceSynthesizer {
             await this.waitForChunk();
           }
 
+          if (lastPromise) await lastPromise;
           finishSpeaking();
           try {
             options.onEnd?.();
@@ -366,7 +389,69 @@ export class KokoroVoiceSynthesizer {
     });
   }
 
+  private async speakGptLive(
+    text: string,
+    token: number,
+    alive: () => boolean,
+    options: VoiceSynthesizerOptions,
+    resolve: () => void
+  ) {
+    if (!options.apiKey) {
+      this.isSpeaking = false;
+      options.onError?.(new Error("GPT-Live API Key is required."));
+      resolve();
+      return;
+    }
+    this.isSpeaking = true;
+    try {
+      const response = await fetch("https://api.openai.com/v1/audio/speech", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${options.apiKey}`,
+        },
+        body: JSON.stringify({
+          model: "tts-1", // Maps to OpenAI's real-time voice engine capabilities via TTS API
+          input: text,
+          voice: "nova",
+          response_format: "mp3",
+        }),
+      });
+      if (!alive()) return;
+      if (!response.ok) {
+        throw new Error(`GPT-Live API error: ${response.status} ${response.statusText}`);
+      }
+      const arrayBuffer = await response.arrayBuffer();
+      if (!alive()) return;
+      
+      const ctx = this.ensureAudioContext();
+      if (!ctx) throw new Error("Web Audio unavailable");
+      
+      const audioBuffer = await ctx.decodeAudioData(arrayBuffer);
+      if (!alive()) return;
+      
+      options.onStart?.();
+      
+      const pcm = audioBuffer.getChannelData(0);
+      const { promise } = this.playChunk(pcm, audioBuffer.sampleRate, options.volume ?? 1.0);
+      await promise;
+      
+      if (alive()) {
+        this.isSpeaking = false;
+        options.onEnd?.();
+      }
+    } catch (err) {
+      if (!alive()) return;
+      console.error('GPT-Live synthesis failed:', err);
+      this.isSpeaking = false;
+      options.onError?.(err);
+    } finally {
+      resolve();
+    }
+  }
+
   private stopInternal(): void {
+    this.nextStartTime = 0;
     for (const src of this.activeSources) {
       try {
         src.onended = null;

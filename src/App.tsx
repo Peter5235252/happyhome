@@ -12,6 +12,7 @@ import { naturalVoice } from './audio/KokoroVoiceSynthesizer';
 import { VoiceAssistantPill } from './components/VoiceAssistantPill';
 import { MemoryManagerModal } from './components/MemoryManagerModal';
 import { SUPPORTED_MODELS, normalizeModelId, resolveApiModelId } from './constants/models';
+import { generateStructure } from './renderer/proceduralStructures';
 import { 
   fetchUserMemoryProfile, 
   saveUserMemoryProfile, 
@@ -92,12 +93,6 @@ export default function App() {
   }, []);
 
   // Neural TTS voice choice (Kokoro, persisted inside the engine).
-  const [ttsVoice, setTtsVoice] = useState<string>(() => naturalVoice.getVoice());
-  const handleSelectTtsVoice = useCallback((voiceId: string) => {
-    if (naturalVoice.setVoice(voiceId)) {
-      setTtsVoice(naturalVoice.getVoice());
-    }
-  }, []);
 
   const handleUpdateApiKey = useCallback((providerId: string, key: string) => {
     setApiKeys(prev => {
@@ -143,11 +138,11 @@ export default function App() {
     smokeSpeed: 1.0,
     windSpeed: 1.0,
     cloudDensity: 0.8,
-    cameraPreset: 'svg_perspective',
-    showOriginalSvg: false,
+    cameraPreset: 'home_perspective',
     debugMode: 0,
     resolutionScale: 1.0,
-    audioEnabled: true,
+    showBaseCottage: true,
+    environmentStyle: 'meadow',
   });
 
   // Sync settings directly to WebGPU renderer
@@ -252,6 +247,8 @@ export default function App() {
               resolutionScale: settings.resolutionScale,
               debugMode: settings.debugMode,
               reflectionsEnabled: settings.reflectionsEnabled,
+              showBaseCottage: settings.showBaseCottage ?? true,
+              environmentStyle: settings.environmentStyle || 'meadow',
             }
           }
         })
@@ -266,7 +263,45 @@ export default function App() {
       // Execute chained tool calls on the 3D scene
       if (data.functionCalls && data.functionCalls.length > 0) {
         for (const call of data.functionCalls) {
-          if (call.name === 'createObject') {
+          if (call.name === 'buildStructure') {
+            const args = call.args;
+            const generated = generateStructure(args);
+            if (args.replaceExisting !== false) {
+              setDynamicObjects(generated);
+            } else {
+              setDynamicObjects(prev => [...prev, ...generated]);
+            }
+            const hideCottage = args.clearBaseCottage !== false;
+            setSettings(prev => ({
+              ...prev,
+              showBaseCottage: hideCottage ? false : (args.showBaseCottage ?? prev.showBaseCottage),
+              ...(args.environment ? { environmentStyle: args.environment } : {})
+            }));
+            if (rendererRef.current) {
+              if (hideCottage) rendererRef.current.settings.showBaseCottage = false;
+              if (args.environment) rendererRef.current.settings.environmentStyle = args.environment;
+            }
+            setLastAction(`Built ${args.style ? args.style + ' ' : ''}${args.type || 'structure'}`);
+          } else if (call.name === 'setEnvironment') {
+            const { environmentStyle, showBaseCottage } = call.args;
+            setSettings(prev => ({
+              ...prev,
+              ...(environmentStyle ? { environmentStyle } : {}),
+              ...(showBaseCottage !== undefined ? { showBaseCottage } : {})
+            }));
+            if (rendererRef.current) {
+              if (environmentStyle) rendererRef.current.settings.environmentStyle = environmentStyle;
+              if (showBaseCottage !== undefined) rendererRef.current.settings.showBaseCottage = showBaseCottage;
+            }
+            setLastAction(`Set landscape to ${environmentStyle || 'updated'}`);
+          } else if (call.name === 'setBaseStructure') {
+            const { visible } = call.args;
+            setSettings(prev => ({ ...prev, showBaseCottage: visible }));
+            if (rendererRef.current) {
+              rendererRef.current.settings.showBaseCottage = visible;
+            }
+            setLastAction(visible ? 'Restored base cottage' : 'Cleared base cottage');
+          } else if (call.name === 'createObject') {
             const args = call.args;
             setDynamicObjects(prev => [...prev, args]);
             setLastAction(`Added ${args.label || args.shape || 'object'}`);
@@ -318,13 +353,12 @@ export default function App() {
             }
             setLastAction(`Adjusted lighting (Time: ${timeOfDay !== undefined ? timeOfDay.toFixed(2) : 'updated'})`);
           } else if (call.name === 'setAtmosphere') {
-            const { smokeSpeed, windSpeed, cloudDensity, audioEnabled } = call.args;
+            const { smokeSpeed, windSpeed, cloudDensity } = call.args;
             setSettings(prev => ({
               ...prev,
               ...(smokeSpeed !== undefined ? { smokeSpeed } : {}),
               ...(windSpeed !== undefined ? { windSpeed } : {}),
               ...(cloudDensity !== undefined ? { cloudDensity } : {}),
-              ...(audioEnabled !== undefined ? { audioEnabled } : {}),
             }));
             setLastAction('Updated atmosphere');
           } else if (call.name === 'setCamera') {
@@ -405,6 +439,11 @@ export default function App() {
         }
       }
 
+      if (data.fallbackNotice) {
+        console.warn(`[AI Model Fallback] ${data.fallbackNotice}`);
+        setLastAction(data.fallbackNotice);
+      }
+
       const speech = data.speechText || "I've sculpted the scene to match your vision.";
       setLastResponse(speech);
 
@@ -420,6 +459,7 @@ export default function App() {
       await naturalVoice.speak(speech, {
         rate: 1.0,
         pitch: 1.0,
+        apiKey: apiKeys['gpt_live'],
         onEnd: () => {
           setVoiceState('listening');
         },
@@ -494,7 +534,8 @@ export default function App() {
                 setMicError(null);
                 setVoiceState((prev) => (prev === 'speaking' || prev === 'thinking' ? prev : 'listening'));
               }
-            }
+            },
+            getApiKey: () => apiKeys.gemini || undefined,
           });
           try {
             stt.start();
@@ -554,6 +595,7 @@ export default function App() {
       : "Voice mode active. How would you like to reshape the scene?";
     setLastResponse(welcome);
     naturalVoice.speak(welcome, {
+      apiKey: apiKeys['gpt_live'],
       onEnd: () => {
         // Only return to listening if mic is usable (no permission error)
         setVoiceState((prev) => (prev === 'speaking' || prev === 'listening' ? 'listening' : prev));
@@ -607,7 +649,8 @@ export default function App() {
         if (sttState === 'listening' && voiceState !== 'speaking' && voiceState !== 'thinking') {
           setVoiceState('listening');
         }
-      }
+      },
+      getApiKey: () => apiKeys.gemini || undefined,
     });
 
     stt.start();
@@ -762,7 +805,7 @@ export default function App() {
     });
   }, []);
 
-  const handleSelectPreset = useCallback((preset: 'svg_perspective' | 'cinematic' | 'meadow' | 'sunset') => {
+  const handleSelectPreset = useCallback((preset: 'home_perspective' | 'svg_perspective' | 'cinematic' | 'meadow' | 'sunset') => {
     if (rendererRef.current) {
       rendererRef.current.setPreset(preset);
       setSettings((prev) => ({
@@ -774,7 +817,7 @@ export default function App() {
   }, []);
 
   const handleResetCamera = useCallback(() => {
-    handleSelectPreset('svg_perspective');
+    handleSelectPreset('home_perspective');
   }, [handleSelectPreset]);
 
   // Mouse & Touch Controls
@@ -896,6 +939,7 @@ export default function App() {
             onSelectPreset={handleSelectPreset}
             onResetCamera={handleResetCamera}
             isVoiceActive={isVoiceActive}
+            voiceState={voiceState}
             toggleVoiceMode={toggleVoiceMode}
             onOpenMemoryManager={() => setShowMemoryModal(true)}
           />
@@ -913,8 +957,6 @@ export default function App() {
             onSubmitTextCommand={(text) => handleUserVoiceMessage(text)}
             onSelectModel={handleSelectModel}
             onUpdateApiKey={handleUpdateApiKey}
-            ttsVoice={ttsVoice}
-            onSelectTtsVoice={handleSelectTtsVoice}
             onInterrupt={handleInterrupt}
             onOpenMemoryManager={() => setShowMemoryModal(true)}
             onToggle={() => {

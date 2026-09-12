@@ -67,7 +67,7 @@ export class WebGPURenderer {
 
   // Render Settings
   public settings: RenderSettings = {
-    timeOfDay: 0.35, // Bright cheerful daylight like SVG
+    timeOfDay: 0.35, // Bright cheerful daylight
     godraysEnabled: true,
     godrayIntensity: 1.2,
     giEnabled: true,
@@ -77,11 +77,12 @@ export class WebGPURenderer {
     smokeSpeed: 1.0,
     windSpeed: 1.0,
     cloudDensity: 0.8,
-    cameraPreset: 'svg_perspective',
-    showOriginalSvg: false,
+    cameraPreset: 'home_perspective',
     debugMode: 0,
     resolutionScale: 1.0,
-    audioEnabled: true,
+    lodMode: 'auto',
+    lodBias: 1.0,
+    simulationSpeed: 1.0,
   };
 
   public dynamicObjects: import("./types").DynamicObject[] = [];
@@ -297,7 +298,7 @@ export class WebGPURenderer {
 
     // Create Initial Textures & Bind Groups
     this.recreateTextures(this.canvas.width || 800, this.canvas.height || 600);
-    this.applyPreset('svg_perspective');
+    this.applyPreset('home_perspective');
     this.startRenderLoop();
   }
 
@@ -367,12 +368,12 @@ export class WebGPURenderer {
     });
   }
 
-  public setPreset(preset: 'svg_perspective' | 'cinematic' | 'meadow' | 'sunset' | 'aerial' | 'dramatic_low' | 'close_up' | string) {
+  public setPreset(preset: 'home_perspective' | 'svg_perspective' | 'cinematic' | 'meadow' | 'sunset' | 'aerial' | 'dramatic_low' | 'close_up' | string) {
     this.applyPreset(preset as any);
     this.sampleIndex = 0;
   }
 
-  public setCameraPreset(preset: 'svg_perspective' | 'cinematic' | 'meadow' | 'sunset' | 'aerial' | 'dramatic_low' | 'close_up' | string) {
+  public setCameraPreset(preset: 'home_perspective' | 'svg_perspective' | 'cinematic' | 'meadow' | 'sunset' | 'aerial' | 'dramatic_low' | 'close_up' | string) {
     this.setPreset(preset);
   }
 
@@ -452,6 +453,14 @@ export class WebGPURenderer {
         dynamicSDF += `
   let dDynOct_${idx} = sdOctahedron(p - vec3f(${pX}, ${pY}, ${pZ}), ${s0});
   res = opU(res, Hit(dDynOct_${idx}, ${matId}u, p.xy));`;
+      } else if (shape === "column" || shape === "pillar") {
+        dynamicSDF += `
+  let dDynCol_${idx} = sdCylinder(p - vec3f(${pX}, ${pY}, ${pZ}), ${s0}, ${s1});
+  res = opU(res, Hit(dDynCol_${idx}, ${matId}u, p.xy));`;
+      } else if (shape === "pyramid") {
+        dynamicSDF += `
+  let dDynPyr_${idx} = sdOctahedron(p - vec3f(${pX}, ${pY}, ${pZ}), ${s0});
+  res = opU(res, Hit(dDynPyr_${idx}, ${matId}u, p.xy));`;
       } else if (shape === "lantern") {
         dynamicSDF += `
   let dDynLant_${idx} = sdRoundBox(p - vec3f(${pX}, ${pY}, ${pZ}), vec3f(${s0}, ${s1}, ${s0}), 0.05);
@@ -685,8 +694,9 @@ export class WebGPURenderer {
     };
   }
 
-  private applyPreset(preset: 'svg_perspective' | 'cinematic' | 'meadow' | 'sunset' | 'aerial' | 'dramatic_low' | 'close_up' | string) {
+  private applyPreset(preset: 'home_perspective' | 'svg_perspective' | 'cinematic' | 'meadow' | 'sunset' | 'aerial' | 'dramatic_low' | 'close_up' | string) {
     switch (preset) {
+      case 'home_perspective':
       case 'svg_perspective':
         this.camera = {
           distance: 10.2,
@@ -752,6 +762,24 @@ export class WebGPURenderer {
           elevation: 1.45,
           target: [0.0, 1.4, 0.0],
           fov: 44,
+        };
+        break;
+      case 'monumental':
+        this.camera = {
+          distance: 12.0,
+          azimuth: -0.15,
+          elevation: 1.65,
+          target: [0.0, 2.0, 0.0],
+          fov: 54,
+        };
+        break;
+      case 'structure_wide':
+        this.camera = {
+          distance: 16.0,
+          azimuth: 0.35,
+          elevation: 1.35,
+          target: [0.0, 1.8, 0.0],
+          fov: 58,
         };
         break;
     }
@@ -884,10 +912,27 @@ export class WebGPURenderer {
     u32[26] = this.settings.reflectionsEnabled ? 1 : 0;
     u32[27] = this.settings.debugMode;
 
-    // 28..31: camMoved + pad
+    const envStyleMap: Record<string, number> = {
+      meadow: 0.0,
+      courtyard: 1.0,
+      plaza: 1.0,
+      stone: 1.0,
+      desert: 2.0,
+      dunes: 2.0,
+      water: 3.0,
+      ocean: 3.0,
+      lake: 3.0,
+      void: 4.0,
+      obsidian: 4.0,
+      alien: 5.0,
+      cyber: 5.0,
+    };
+    const envFloat = envStyleMap[(this.settings.environmentStyle || 'meadow').toLowerCase()] ?? 0.0;
+
+    // 28..31: camMoved + showBaseCottage + environmentStyle + pad2
     u32[28] = camMoved ? 1 : 0;
-    data[29] = 0;
-    data[30] = 0;
+    data[29] = (this.settings.showBaseCottage ?? true) ? 1.0 : 0.0;
+    data[30] = envFloat;
     data[31] = 0;
 
     this.device.queue.writeBuffer(this.uniformBuffer, 0, data);

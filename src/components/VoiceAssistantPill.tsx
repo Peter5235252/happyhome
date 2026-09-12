@@ -7,7 +7,6 @@ import {
   Loader2, 
   X, 
   Square, 
-  HelpCircle, 
   Check, 
   Key, 
   ChevronDown, 
@@ -15,8 +14,7 @@ import {
   Send,
   AlertCircle
 } from 'lucide-react';
-import { SUPPORTED_MODELS, PROVIDER_LIST, findModelInfo } from '../constants/models';
-import { VOICE_OPTIONS } from '../audio/KokoroVoiceSynthesizer';
+import { SUPPORTED_MODELS, PROVIDER_LIST, PROVIDER_DEFAULT_MODELS, findModelInfo } from '../constants/models';
 import { sound } from '../audio/soundEffects';
 
 export interface VoiceAssistantPillProps {
@@ -33,8 +31,6 @@ export interface VoiceAssistantPillProps {
   onSubmitTextCommand?: (text: string) => void;
   onSelectModel: (modelId: string) => void;
   onUpdateApiKey: (providerId: string, key: string) => void;
-  ttsVoice?: string;
-  onSelectTtsVoice?: (voiceId: string) => void;
   onToggle: () => void;
   onInterrupt?: () => void;
   onOpenMemoryManager?: () => void;
@@ -54,8 +50,6 @@ export const VoiceAssistantPill: React.FC<VoiceAssistantPillProps> = ({
   onSubmitTextCommand,
   onSelectModel,
   onUpdateApiKey,
-  ttsVoice,
-  onSelectTtsVoice,
   onToggle,
   onInterrupt,
   onOpenMemoryManager,
@@ -67,7 +61,7 @@ export const VoiceAssistantPill: React.FC<VoiceAssistantPillProps> = ({
   // Previously this matched `id` only with a hardcoded-index Gemini fallback,
   // so any alias/stale value rendered as Gemini even after picking another model.
   const currentModel = findModelInfo(selectedModel);
-  const [activeProviderTab, setActiveProviderTab] = useState<'gemini' | 'openai' | 'xai' | 'anthropic' | 'mistral'>(
+  const [activeProviderTab, setActiveProviderTab] = useState<'gemini' | 'openai' | 'xai' | 'anthropic'>(
     currentModel.providerId
   );
 
@@ -79,7 +73,6 @@ export const VoiceAssistantPill: React.FC<VoiceAssistantPillProps> = ({
   }, [currentModel?.providerId]);
 
   const activeProviderInfo = PROVIDER_LIST.find(p => p.id === activeProviderTab) || PROVIDER_LIST[0];
-  const providerModels = SUPPORTED_MODELS.filter(m => m.providerId === activeProviderTab);
 
   const handleSendTyped = (e?: React.FormEvent) => {
     if (e) e.preventDefault();
@@ -90,14 +83,17 @@ export const VoiceAssistantPill: React.FC<VoiceAssistantPillProps> = ({
   };
 
   return (
-    <AnimatePresence mode="wait">
+    <AnimatePresence>
       {isActive && (
         <motion.div
           key="voice-assistant-pill"
-          initial={{ opacity: 0, y: -20, scale: 0.98 }}
-          animate={{ opacity: 1, y: 0, scale: 1 }}
-          exit={{ opacity: 0, y: -20, scale: 0.98 }}
-          transition={{ duration: 0.15, ease: 'easeOut' }}
+          initial={{ opacity: 0, y: -110, x: '-50%' }}
+          animate={{ opacity: 1, y: 0, x: '-50%' }}
+          exit={{ opacity: 0, y: -110, x: '-50%' }}
+          transition={{
+            y: { duration: 0.38, ease: [0.16, 1, 0.3, 1] },
+            opacity: { duration: 0.26, ease: 'easeOut' },
+          }}
           // Glass on the animated layer itself (same pattern as MinimalUI bars/buttons):
           // backdrop-filter is part of the compositing layer, so blur fades WITH
           // the slide/fade from frame 1 instead of popping in after it finishes.
@@ -105,7 +101,11 @@ export const VoiceAssistantPill: React.FC<VoiceAssistantPillProps> = ({
             WebkitBackdropFilter: 'blur(24px) saturate(180%)',
             backdropFilter: 'blur(24px) saturate(180%)',
           }}
-          className="pointer-events-auto fixed top-4 left-1/2 -translate-x-1/2 z-50 flex flex-col items-center max-w-lg w-[94vw] sm:w-[32rem] transform-gpu rounded-2xl bg-[rgba(10,10,10,0.55)] backdrop-blur-xl border border-white/10 shadow-2xl"
+          className={`pointer-events-auto fixed top-4 left-1/2 z-50 flex flex-col items-center max-w-lg w-[94vw] sm:w-[32rem] transform-gpu rounded-2xl backdrop-blur-xl border transition-colors duration-500 ${
+            state === 'thinking'
+              ? 'thinking-glass-container'
+              : 'bg-[rgba(10,10,10,0.55)] border-white/10 shadow-2xl'
+          }`}
         >
           {/* Content — no separate glass layer so there is only one composited backdrop */}
           <div
@@ -137,7 +137,7 @@ export const VoiceAssistantPill: React.FC<VoiceAssistantPillProps> = ({
                       : state === 'speaking'
                       ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 hover:bg-rose-500/20 hover:text-rose-300 hover:border-rose-500/30'
                       : state === 'thinking'
-                      ? 'bg-sky-500/20 text-sky-300 border border-sky-500/30 hover:bg-rose-500/20 hover:text-rose-300 hover:border-rose-500/30'
+                      ? 'thinking-button-shift hover:bg-rose-500/20 hover:text-rose-300 hover:border-rose-500/30'
                       : 'bg-white/5 text-neutral-400 border border-white/10 hover:bg-white/10'
                   }`}
                   title={
@@ -151,7 +151,7 @@ export const VoiceAssistantPill: React.FC<VoiceAssistantPillProps> = ({
                   }
                 >
                   {state === 'thinking' || isRequestingMic ? (
-                    <Loader2 className="h-3.5 w-3.5 animate-spin text-sky-400" />
+                    <Loader2 className={`h-3.5 w-3.5 animate-spin ${state === 'thinking' ? 'text-current' : 'text-sky-400'}`} />
                   ) : state === 'speaking' ? (
                     <Volume2 className="h-3.5 w-3.5 text-emerald-400" />
                   ) : micError ? (
@@ -162,7 +162,7 @@ export const VoiceAssistantPill: React.FC<VoiceAssistantPillProps> = ({
                 </button>
 
                 <div className="flex items-center gap-2">
-                  <span className="text-xs font-medium tracking-wide text-neutral-200">
+                  <span className={`text-xs font-medium tracking-wide transition-colors ${state === 'thinking' ? 'thinking-text-shift' : 'text-neutral-200'}`}>
                     {micError ? 'Mic Access Needed' : state === 'listening' ? 'Listening' : state === 'thinking' ? 'Thinking...' : state === 'speaking' ? 'Speaking' : 'Paused'}
                   </span>
 
@@ -176,7 +176,7 @@ export const VoiceAssistantPill: React.FC<VoiceAssistantPillProps> = ({
                         : state === 'speaking'
                         ? 'bg-emerald-400'
                         : state === 'thinking'
-                        ? 'bg-sky-400'
+                        ? 'thinking-dot-shift'
                         : 'bg-neutral-500'
                     }`}
                   />
@@ -234,22 +234,6 @@ export const VoiceAssistantPill: React.FC<VoiceAssistantPillProps> = ({
                   </button>
                 )}
 
-                {/* Minimalist '?' Icon Dropdown Toggle */}
-                <button
-                  onClick={() => {
-                    sound.playTap();
-                    setShowMenu(prev => !prev);
-                  }}
-                  className={`flex items-center justify-center h-6 w-6 rounded-md transition-colors ${
-                    showMenu
-                      ? 'bg-white/20 text-white'
-                      : 'text-neutral-400 hover:text-white hover:bg-white/10'
-                  }`}
-                  title="Model selector & API keys (?)"
-                >
-                  <HelpCircle className="h-3.5 w-3.5" />
-                </button>
-
                 <button
                   onClick={() => {
                     sound.playTap();
@@ -301,18 +285,24 @@ export const VoiceAssistantPill: React.FC<VoiceAssistantPillProps> = ({
                   transition={{ duration: 0.15, ease: 'easeOut' }}
                   className="mt-3 pt-3 border-t border-white/10 space-y-3 overflow-hidden"
                 >
-                  {/* Provider Tabs */}
-                  <div className="flex items-center gap-1 overflow-x-auto pb-1 text-xs no-scrollbar">
+                  {/* Provider Toolbar */}
+                  <div className="flex items-center gap-1 overflow-x-auto no-scrollbar pb-0.5 text-xs">
                     {PROVIDER_LIST.map((provider) => {
                       const isSelected = activeProviderTab === provider.id;
                       const hasActiveModel = currentModel.providerId === provider.id;
+                      const modelNameForProvider = PROVIDER_DEFAULT_MODELS[provider.id] || currentModel.name;
                       return (
                         <button
                           key={provider.id}
                           onClick={() => {
                             sound.playTap();
                             setActiveProviderTab(provider.id);
+                            const autoModelId = PROVIDER_DEFAULT_MODELS[provider.id];
+                            if (autoModelId) {
+                              onSelectModel(autoModelId);
+                            }
                           }}
+                          title={`${provider.name} (Model: ${modelNameForProvider})`}
                           className={`px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors whitespace-nowrap flex items-center gap-1.5 ${
                             isSelected
                               ? 'bg-white/20 text-white border border-white/20'
@@ -326,63 +316,6 @@ export const VoiceAssistantPill: React.FC<VoiceAssistantPillProps> = ({
                         </button>
                       );
                     })}
-                  </div>
-
-                  {/* Models list for selected provider */}
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
-                    {providerModels.map((model) => {
-                      const isCurrent = currentModel.id === model.id;
-                      return (
-                        <button
-                          key={model.id}
-                          onClick={() => {
-                            sound.playTap();
-                            onSelectModel(model.id);
-                          }}
-                          className={`flex items-center justify-between px-2.5 py-2 rounded-lg text-xs transition-all text-left ${
-                            isCurrent
-                              ? 'bg-white/15 text-white border border-white/30 font-medium'
-                              : 'bg-white/5 text-neutral-300 hover:bg-white/10 hover:text-white border border-white/5'
-                          }`}
-                        >
-                          <span className="truncate">{model.name}</span>
-                          {isCurrent && <Check className="h-3 w-3 text-emerald-400 shrink-0 ml-1.5" />}
-                        </button>
-                      );
-                    })}
-                  </div>
-
-                  {/* Neural Voice Picker (free on-device Kokoro, no API key needed) */}
-                  <div className="pt-2 border-t border-white/5 space-y-1">
-                    <div className="flex items-center justify-between text-[11px] text-neutral-400">
-                      <span className="flex items-center gap-1">
-                        <Volume2 className="h-3 w-3 text-neutral-400" />
-                        <span>Voice</span>
-                      </span>
-                      <span className="text-emerald-400 text-[10px]">Free · On-device</span>
-                    </div>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
-                      {VOICE_OPTIONS.map((voice) => {
-                        const isCurrentVoice = (ttsVoice || VOICE_OPTIONS[0].id) === voice.id;
-                        return (
-                          <button
-                            key={voice.id}
-                            onClick={() => {
-                              sound.playTap();
-                              onSelectTtsVoice?.(voice.id);
-                            }}
-                            className={`flex items-center justify-between px-2.5 py-2 rounded-lg text-xs transition-all text-left ${
-                              isCurrentVoice
-                                ? 'bg-white/15 text-white border border-white/30 font-medium'
-                                : 'bg-white/5 text-neutral-300 hover:bg-white/10 hover:text-white border border-white/5'
-                            }`}
-                          >
-                            <span className="truncate">{voice.label}</span>
-                            {isCurrentVoice && <Check className="h-3 w-3 text-emerald-400 shrink-0 ml-1.5" />}
-                          </button>
-                        );
-                      })}
-                    </div>
                   </div>
 
                   {/* Minimalist API Key Input for Provider */}                  <div className="pt-2 border-t border-white/5 space-y-1">
@@ -467,8 +400,12 @@ export const VoiceAssistantPill: React.FC<VoiceAssistantPillProps> = ({
                 type="text"
                 value={typedInput}
                 onChange={(e) => setTypedInput(e.target.value)}
-                placeholder="Type command or speak..."
-                className="flex-1 bg-black/40 border border-white/10 rounded-lg px-2.5 py-1.5 text-xs text-white placeholder-neutral-500 focus:outline-none focus:border-white/30 transition-colors"
+                placeholder={state === 'thinking' ? "Thinking..." : "Type command or speak..."}
+                className={`flex-1 rounded-lg px-2.5 py-1.5 text-xs text-white placeholder-neutral-500 focus:outline-none border transition-all ${
+                  state === 'thinking'
+                    ? 'thinking-inner-shift'
+                    : 'bg-black/40 border-white/10 focus:border-white/30'
+                }`}
               />
               <button
                 type="submit"
